@@ -64,3 +64,62 @@ Creating a small integration slice proves the infrastructure is sound without co
 **Answer:**
 Large Language Models evolve rapidly. If an LLM name like `llama-3.3-70b-versatile` were hardcoded in multiple Python files, upgrading to a newer or specialized model would require search-and-replace edits, regression testing, and code commits. 
 By placing `GROQ_MODEL` in `.env`, we maintain **model agnosticism**; changing the model across the entire application takes only a single configuration update without modifying a line of code.
+
+---
+
+## Unit 2: Database Foundation & Schema Design Concepts
+
+### Question 9: What is PostgreSQL, and why use it for pharmaceutical complaints?
+**Answer:**
+- **PostgreSQL** is an enterprise-grade, open-source object-relational database management system (ORDBMS).
+- In pharmaceutical Quality Management Systems (QMS), complaints are formal records. PostgreSQL provides **ACID guarantees** (Atomicity, Consistency, Isolation, Durability). If a system crashes mid-transaction, records are never half-written or corrupted.
+- It enforces strict data types, relations between products, batches, and complaint events, and dependable timestamps needed for quality investigation audit trails.
+
+---
+
+### Question 10: What are tables, rows, and primary keys? Why choose UUIDs?
+**Answer:**
+- **Table:** A structured collection of data organized into rows and columns (e.g., `complaints`).
+- **Column:** A specific attribute or field with a defined data type (e.g., `product_name` is `TEXT`, `manufacturing_date` is `DATE`).
+- **Row (Record):** A single distinct instance in the table representing one complaint event.
+- **Primary Key:** A column (or set of columns) that uniquely identifies each individual row. No two rows can share the same primary key.
+- **Why UUIDs over sequential integers (1, 2, 3...)?** Sequential IDs reveal business metrics (how many complaints are filed) and allow enumeration attacks (a user changing `/complaints/5` to `/complaints/6` in the URL). UUIDv4 generates a 128-bit cryptographically random identifier that cannot be predicted.
+- **Crucial Security Note:** UUIDs provide non-sequential uniqueness, but they do **not** replace authentication or authorization. You still need proper API permission checks to ensure a user is allowed to view that UUID.
+
+---
+
+### Question 11: What does `NULL` mean in SQL, and why avoid placeholder values like "unknown" or 0?
+**Answer:**
+- In relational databases, **`NULL` represents the absence of a value**—meaning the data is unknown, unprovided, or not applicable.
+- In pharmaceutical complaints, complainants frequently report an issue without knowing the lot number, manufacturing date, or exact affected quantity.
+- If we put `"unknown"` in text columns, `0` in integer columns, or fake dates (`1970-01-01`), we pollute the dataset:
+  - An affected quantity of `0` falsely suggests that zero units were impacted.
+  - A fake date could distort shelf-life calculations and compliance deadlines.
+- By using `NULL`, downstream systems and analytics can accurately identify missing data without ambiguity.
+
+---
+
+### Question 12: What is an ORM (SQLAlchemy), and why use it over raw SQL strings?
+**Answer:**
+- **ORM (Object-Relational Mapping):** A programming technique that allows developers to interact with relational databases using object-oriented code. In SQLAlchemy, Python classes map to database tables (`Complaint` class -> `complaints` table), and class instances represent rows.
+- **Benefits:**
+  - **Type Safety & Maintainability:** Schema changes are made in clean Python code rather than scattered across raw SQL queries.
+  - **SQL Injection Prevention:** SQLAlchemy uses parameterized queries under the hood, protecting the application from malicious SQL injections.
+  - **Developer Productivity:** Simplifies transactions, relationships, and session lifecycle management.
+
+---
+
+### Question 13: What is a database connection pool, and why is it important with Supabase?
+**Answer:**
+- Establishing a new TCP/TLS connection to a remote database server takes significant time (often 50–150ms).
+- A **connection pool** keeps a set of active connections open in memory and reuses them across incoming HTTP requests.
+- In `database.py`, we configure `pool_pre_ping=True` (which tests whether a connection is still alive before using it) and `pool_recycle=300` (which recycles idle connections every 5 minutes). This prevents stale connection errors commonly caused by cloud proxies or Supabase's transaction poolers closing inactive connections.
+
+---
+
+### Question 14: Why keep AI-derived fields (like risk assessment or CAPA) separate from the initial complaint table?
+**Answer:**
+- **Separation of Concerns:** A customer complaint is an external statement of fact (e.g., *"the pill bottle seal was broken"*). This evidence should remain clean and immutable.
+- An AI-generated risk assessment or recommended Corrective and Preventive Action (CAPA) is an **analytical interpretation** produced by an LLM workflow.
+- Keeping these in separate tables/structures allows AI recommendations to be versioned, re-evaluated with newer models, or revised by human QA operators without altering the historical customer report.
+

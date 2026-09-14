@@ -98,7 +98,48 @@ The **AIVOA Customer Complaint Management System** is an AI-powered enterprise a
 - **Role:** Relational database for long-term data persistence.
 - **Responsibilities:**
   - Provides persistent storage for saved complaint records, audit logs, and version history.
-  - Enforces ACID compliance, essential for pharmaceutical regulatory audits (e.g., FDA 21 CFR Part 11).
+  - Enforces ACID compliance, supporting reliable audit trails inspired by pharmaceutical Quality Management System (QMS) principles. (Note: this is an MVP inspired by pharma QMS requirements, not a certified 21 CFR Part 11 system).
+
+---
+
+## Unit 2 Update: Database Architecture & Integration Layer
+
+```
++-------------------------------------------------------------------------+
+|                              Client Browser                             |
+|                           React + Redux Toolkit                         |
++------------------------------------+------------------------------------+
+                                     |
+                                     | HTTP / JSON (REST API)
+                                     v
++-------------------------------------------------------------------------+
+|                              Server Side                                |
+|                                                                         |
+|   +-----------------------------------------------------------------+   |
+|   |                       FastAPI Application                       |   |
+|   |          (Request Validation, Endpoints, Dependencies)          |   |
+|   +-------------------------------+---------------------------------+   |
+|                                   |                                     |
+|                                   | Session Injection (get_db)          |
+|                                   v                                     |
+|   +-----------------------------------------------------------------+   |
+|   |                   SQLAlchemy 2.x ORM Engine                     |   |
+|   |           (Connection Pooling, Mapping, Transactions)           |   |
+|   +-------------------------------+---------------------------------+   |
+|                                   |                                     |
+|                                   | PostgreSQL Protocol (psycopg2)      |
+|                                   v                                     |
+|   +-----------------------------------------------------------------+   |
+|   |                  PostgreSQL Database (Supabase)                 |   |
+|   |            (Hosted ACID Relational Storage: complaints)         |   |
+|   +-----------------------------------------------------------------+   |
++-------------------------------------------------------------------------+
+```
+
+### Database Security & Privilege Demarcation
+1. **No Direct Client Access:** The React browser client NEVER connects directly to PostgreSQL/Supabase. All database access is mediated by FastAPI.
+2. **Credential Isolation:** Privileged database credentials (`DATABASE_URL`) exist solely in `backend/.env` on the server and are never exposed via network responses, API routes, or client bundles.
+3. **Connection Pooling:** SQLAlchemy manages connection pooling (`pool_pre_ping=True`, `pool_recycle=300`) to ensure resilient connectivity with Supabase's connection poolers.
 
 ---
 
@@ -108,3 +149,5 @@ The **AIVOA Customer Complaint Management System** is an AI-powered enterprise a
 2. **Model Agnosticism:** The LLM model name is configured via server environment variables, enabling zero-code model upgrades.
 3. **Separation of Concerns:** Client UI state is decoupled from persistent database records.
 4. **Human-in-the-Loop:** In pharmaceutical quality control, AI recommendations must be human-reviewed and confirmed before final regulatory filing.
+5. **Architectural Realism:** The system is an MVP inspired by pharmaceutical Quality Management System (QMS) practices; regulatory compliance claims are not made without audited infrastructure.
+
