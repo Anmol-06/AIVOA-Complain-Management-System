@@ -168,3 +168,84 @@ Historical entries are preserved permanently.
   - Adheres strictly to the minimalism and anti-over-engineering principle.
   - Avoids introducing migration churn before the baseline schema is settled.
 
+---
+
+## ADR-012: Separation of Pydantic API Schemas and SQLAlchemy Database Models
+- **Date:** 2026-09-15
+- **Status:** Accepted
+- **Context:**
+  When designing RESTful APIs with FastAPI and SQLAlchemy, a common design question is whether to use the same classes for data serialization/validation and database persistence, or decouple them.
+- **Decision:**
+  Decouple the data structures into two distinct layers:
+  - **Pydantic Schemas (`backend/app/schemas/`):** Define the external API contract (`ComplaintCreate`, `ComplaintUpdate`, `ComplaintResponse`). Handle HTTP input validation, parsing, date coercion, and response shape.
+  - **SQLAlchemy Models (`backend/app/db/models.py`):** Define table structures, database column constraints, primary keys, and transaction mapping in PostgreSQL.
+- **Consequences:**
+  - Clear separation of concerns between public API shape and internal database schema.
+  - Prevents mass-assignment vulnerabilities: clients cannot manipulate internal columns (like `id` or `created_at`) on creation.
+  - Flexibility to vary input vs output payloads independently (e.g., all fields optional on update, required fields on creation, read-only audit timestamps on response).
+
+---
+
+## ADR-013: Authoritative Database Record & Partial Updates via PATCH
+- **Date:** 2026-09-15
+- **Status:** Accepted
+- **Context:**
+  When updating an existing pharmaceutical complaint, the client might only modify a single field (e.g. `quantity_affected` from 5 to 8). We must decide where the source of truth resides during an update, and how unsupplied fields are treated.
+- **Decision:**
+  - The PostgreSQL database record is strictly authoritative for existing complaints. The server loads the persistent record from the database before applying modifications.
+  - `PATCH /api/complaints/{id}` uses Pydantic's `model_dump(exclude_unset=True)`. Only fields explicitly included in the request body are modified.
+  - Unspecified fields are **never** overwritten with `None` or `NULL`.
+- **Consequences:**
+  - Completely eliminates accidental data erasure of existing complaint fields during updates.
+  - Prevents race conditions or state desynchronization from client-side caches (such as Redux) assuming they own the authoritative complaint record.
+
+---
+
+## ADR-014: Redux Toolkit as Single Source of Truth for Complex Complaint Form State
+- **Date:** 2026-09-15
+- **Status:** Accepted
+- **Context:**
+  The pharmaceutical complaint form has 13 domain fields organized across four sections, plus asynchronous submission state (saving, error, success message, saved ID). We had to choose between managing form inputs with local React state (`useState`) vs. centralized Redux Toolkit state (`complaintSlice`).
+- **Decision:**
+  Manage the complaint form state centrally inside Redux Toolkit via `complaintSlice.ts`:
+  - `formData`: object with all 13 complaint fields.
+  - `updateComplaintField`: single generic reducer updating one field at a time (`{ field, value }`).
+  - `resetComplaintForm`: resets all form fields to initial empty state.
+  - `isSaving`, `error`, `successMessage`, `savedComplaintId`: discrete UI workflow state.
+- **Consequences:**
+  - Form state is easily shareable across components (e.g., when the AI assistant in Unit 5 needs to auto-populate or review form fields).
+  - Clean separation of UI rendering from state mutation logic.
+  - Retains typed Redux hooks (`useAppDispatch`, `useAppSelector`) without prop-drilling.
+
+---
+
+## ADR-015: Client-Side Empty String Sanitization to SQL NULL
+- **Date:** 2026-09-15
+- **Status:** Accepted
+- **Context:**
+  In HTML5 forms, empty or cleared inputs naturally evaluate to empty strings (`""`). Passing empty strings for optional dates (`manufacturing_date: ""`) causes PostgreSQL date parsing failures (`invalid input syntax for type date`). Passing empty strings for text fields pollutes the database with `""` instead of `NULL`.
+- **Decision:**
+  In `frontend/src/services/api.ts`, automatically sanitize all empty strings and whitespace-only strings to `null` before sending HTTP JSON payloads to FastAPI.
+- **Consequences:**
+  - Database maintains pristine data hygiene: missing data is stored strictly as SQL `NULL`.
+  - Avoids false data validation errors on optional date and number fields.
+  - Prevents subtle bugs in analytical queries filtering by `IS NULL`.
+
+---
+
+## ADR-016: Two-Column Pharma QMS Layout with Visual Placeholder for Future AI Assistant
+- **Date:** 2026-09-15
+- **Status:** Accepted
+- **Context:**
+  The target pharmaceutical UI requires a two-column workspace: a complaint entry form on the left and an AI Complaint Intake Assistant on the right. However, Unit 4 strictly excludes AI implementation.
+- **Decision:**
+  Build a responsive two-column grid layout where:
+  - Left column: The complete, functional pharmaceutical complaint form (`ComplaintForm`).
+  - Right column: A clean, minimal visual placeholder card explicitly stating that AI document extraction and natural-language intake will be implemented in Unit 5.
+  - On smaller screens / viewports, the grid responsively stacks columns vertically.
+- **Consequences:**
+  - Establishes the final visual layout expected in pharmaceutical Quality Management Systems without introducing premature AI dependencies.
+  - Clear UX boundaries between manual complaint intake and future automated AI capabilities.
+
+
+

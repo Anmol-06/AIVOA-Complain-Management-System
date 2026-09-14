@@ -123,3 +123,126 @@ By placing `GROQ_MODEL` in `.env`, we maintain **model agnosticism**; changing t
 - An AI-generated risk assessment or recommended Corrective and Preventive Action (CAPA) is an **analytical interpretation** produced by an LLM workflow.
 - Keeping these in separate tables/structures allows AI recommendations to be versioned, re-evaluated with newer models, or revised by human QA operators without altering the historical customer report.
 
+---
+
+## Unit 3: Complaint CRUD API Concepts & Interview Preparation
+
+### Question 15: What is the difference between Pydantic and SQLAlchemy?
+**Answer:**
+- **Pydantic:** A data parsing and validation library for Python. It acts at the **application boundary** (HTTP requests and responses). It validates data types, handles JSON serialization/deserialization, parses string dates into `datetime.date` objects, and returns standard HTTP 422 errors when request payloads are invalid.
+- **SQLAlchemy:** An Object-Relational Mapper (ORM) that acts at the **persistence boundary**. It translates Python object operations into SQL queries (`INSERT`, `SELECT`, `UPDATE`), manages database transactions (`commit`, `rollback`), and coordinates connection pooling.
+- **In short:** Pydantic validates what enters and leaves your API; SQLAlchemy stores and retrieves what lives in PostgreSQL.
+
+---
+
+### Question 16: What is the difference between POST and PATCH in RESTful APIs?
+**Answer:**
+- **`POST /api/complaints`:** Creates a brand-new resource. The client sends complaint details, and the server generates a new unique identifier (`id`) and audit timestamps (`created_at`), returning HTTP `201 Created`.
+- **`PATCH /api/complaints/{id}`:** Applies a **partial update** to an existing resource. The client sends only the fields that need changing (e.g., updating only `quantity_affected` from 5 to 8). All other fields on the existing record are preserved as-is.
+- *(Note: In contrast to `PUT`, which replaces the entire resource and requires sending all fields, `PATCH` modifies only specified attributes).*
+
+---
+
+### Question 17: How does FastAPI dependency injection work (`Depends(get_db)`)?
+**Answer:**
+- Dependency injection is a pattern where a framework automatically provides required resources to route functions when an HTTP request arrives.
+- In `backend/app/db/database.py`, `get_db()` is a generator function:
+  ```python
+  def get_db():
+      db = SessionLocal()
+      try:
+          yield db
+      finally:
+          db.close()
+  ```
+- When a route specifies `db: Session = Depends(get_db)`:
+  1. FastAPI calls `get_db()`, which opens a new SQLAlchemy session from the connection pool.
+  2. The route executes using `db`.
+  3. Regardless of whether the route succeeds or raises an exception, the `finally:` block executes and safely returns the database connection to the pool. This prevents database connection leaks.
+
+---
+
+### Question 18: What is a SQLAlchemy `Session`, and what happens during `add`, `commit`, and `refresh`?
+**Answer:**
+- A **`Session`** is an in-memory workspace (an implementation of the *Unit of Work* pattern) that tracks changes made to database models.
+- **`db.add(complaint)`:** Places the Python model instance into the session's pending list. No SQL is sent to PostgreSQL yet.
+- **`db.commit()`:** Flushes pending SQL commands (`INSERT` or `UPDATE`) and commits the database transaction in PostgreSQL. Once committed, the changes are permanent and visible to other transactions.
+- **`db.refresh(complaint)`:** Queries PostgreSQL to reload the instance's attributes with database-generated defaults (such as the generated UUID `id`, `created_at`, and `updated_at`).
+
+---
+
+### Question 19: Why must the database (not Redux) be authoritative for existing complaints?
+**Answer:**
+- In an enterprise multi-user system (such as pharmaceutical Quality Assurance), multiple QA officers or background systems can update complaints concurrently.
+- **Redux** represents the local, in-memory state of a single user's browser tab. If an update route relied on the client sending back what it thinks the complaint looks like, one user could accidentally overwrite recent changes made by another user or background process.
+- By making PostgreSQL the **authoritative source of truth**, the server fetches the current persistent row from the database, applies only the user's specific changes, and commits.
+
+---
+
+### Question 20: Why must `PATCH` use `model_dump(exclude_unset=True)`?
+**Answer:**
+- In Pydantic models with default `None` values, standard `model_dump()` produces a dictionary containing every field:
+  `{"quantity_affected": 8, "customer_name": None, "product_name": None...}`
+- If you applied this directly to the database record, every unspecified field would be overwritten with `NULL`, accidentally destroying the customer's name, product name, and batch number!
+- Using `model_dump(exclude_unset=True)` ensures that Pydantic only includes fields that were **explicitly provided in the client's HTTP request body**. If the client only sent `{"quantity_affected": 8}`, the dictionary will contain only `{"quantity_affected": 8}`, keeping all other fields completely safe.
+
+---
+
+## Unit 4: Complaint Intake Form & Redux Integration Concepts
+
+### Question 21: What are controlled vs uncontrolled components in React, and why use controlled components here?
+**Answer:**
+- **Uncontrolled Component:** The form input maintains its own internal DOM state (e.g. standard `<input>` where you read its value via a `ref` on submit). React does not know the value as the user types.
+- **Controlled Component:** The input element's displayed value is bound to a state variable (e.g. `value={formData.product_name}`), and every user keystroke triggers an `onChange` handler that updates state.
+- **Why Controlled Components for Pharma Complaints:**
+  1. **Immediate State Synchronization:** Redux always knows the current value of every field, enabling real-time validation, character counters, or auto-save features.
+  2. **Predictable Reset and Programmatic Population:** Resetting the form or allowing an AI assistant to populate fields from extracted documents (in Unit 5) requires programmatically setting input values without querying DOM nodes directly.
+  3. **Single Source of Truth:** The Redux store is the unequivocal truth for what the user has entered.
+
+---
+
+### Question 22: Why manage the complaint form in Redux Toolkit instead of local `useState`?
+**Answer:**
+- In simple single-page forms, local `useState` is often sufficient. However, in our pharmaceutical architecture:
+  1. **Cross-Component Coordination:** In Unit 5, the right-hand panel will feature an AI Complaint Intake Assistant. The AI assistant needs to populate fields into the complaint form, highlight low-confidence extractions, and coordinate suggestions. Centralizing form data in Redux enables seamless data sharing between the AI panel and the complaint form without prop-drilling.
+  2. **Global State Inspection & Debugging:** Redux DevTools allows QA engineers and developers to inspect every field change, action dispatch, and state transition chronologically.
+  3. **Separation of Concerns:** Business state logic (resetting, saving status, error handling) is isolated in `complaintSlice.ts`, keeping the React presentation component clean and focused on layout and accessibility.
+
+---
+
+### Question 23: Why should frontend validation remain lightweight while the backend remains authoritative?
+**Answer:**
+- **Incomplete Real-World Intake:** Real-world pharmaceutical complaints frequently arrive incomplete (e.g. a customer reporting adverse discoloration may not know the manufacturing date or batch number). If the frontend enforced strict client-side validation requiring all fields, valuable safety reports would be blocked.
+- **Defense in Depth:** Client-side validation can always be bypassed (via Postman, cURL, or browser dev tools). Therefore, the backend API must be the authoritative gatekeeper.
+- **Clean Responsibilities:** The frontend performs basic sanity checks (e.g., ensuring quantity is numeric and dates match `YYYY-MM-DD`), while FastAPI and Pydantic enforce domain constraints, type coercion, and database insertion rules.
+
+---
+
+### Question 24: Why convert empty string inputs (`""`) to `null` before sending to the backend?
+**Answer:**
+- In HTML forms, empty text inputs and unselected dropdowns evaluate to empty strings (`""`).
+- In SQL databases, an empty string `""` is **not** the same as `NULL`:
+  - `NULL` means the value is unknown or unprovided.
+  - `""` is an actual string of length 0.
+- Furthermore, PostgreSQL rejects empty strings for typed columns like `DATE` (`invalid input syntax for type date: ""`).
+- Converting empty strings to `null` in `services/api.ts` ensures that PostgreSQL stores clean SQL `NULL` values, preserving database hygiene and preventing runtime type-casting crashes.
+
+---
+
+### Question 25: Why must entered form data be preserved if an API request fails?
+**Answer:**
+- In pharmaceutical manufacturing and clinical environments, complaint descriptions are often lengthy, detailed narratives with lot numbers, dates, and dosage observations.
+- If a network error, timeout, or server validation error occurs and the form immediately wipes its inputs, the user loses minutes of critical work, causing frustration and potential loss of safety data.
+- By preserving the entered form state in Redux upon failure and displaying an inline error alert, the user can review the issue, correct any invalid field, and retry without retyping their narrative.
+
+---
+
+### Question 26: Why must API keys and database credentials never be placed in frontend `.env` files?
+**Answer:**
+- Frontend JavaScript (including React, Vite, and Next.js client code) is downloaded, unpacked, and executed directly on the user's browser.
+- Any environment variable bundled by Vite (prefixed with `VITE_`) is compiled into static JavaScript files. Anyone can inspect network traffic or bundle sources to extract these strings.
+- Storing a `DATABASE_URL` or `GROQ_API_KEY` on the client allows any user or attacker to directly connect to your database, bypass all business logic, or drain API credits.
+- Private credentials must reside strictly on the backend server (`backend/.env`), where they are protected behind authenticated, rate-limited, and validated API endpoints.
+
+
+

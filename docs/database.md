@@ -80,3 +80,97 @@ In Unit 2, the baseline `complaints` table schema was established via SQLAlchemy
 - UUIDv4 is used for primary keys to prevent sequential ID guessing (e.g., accessing `/complaints/101`, `/complaints/102`).
 - **Security Rule:** UUIDs provide non-sequential uniqueness, but **do not provide authorization or access control**. Proper user role and ownership authorization must be enforced independently at the API layer.
 
+---
+
+## Unit 3 Update: API Validation Boundary vs. Database Persistence Models
+
+In Unit 3, a strict separation of concerns was established between API data validation (Pydantic) and database persistence (SQLAlchemy).
+
+### Architectural Comparison
+
+| Dimension | Pydantic Schemas (`backend/app/schemas/complaint.py`) | SQLAlchemy Models (`backend/app/db/models.py`) |
+|---|---|---|
+| **Primary Role** | HTTP boundary validation, request deserialization, response formatting. | Object-Relational Mapping (ORM), database schema definition, SQL transactions. |
+| **Execution Point** | Runs when FastAPI receives or returns HTTP JSON payloads. | Runs when interacting with PostgreSQL via the database session (`SessionLocal`). |
+| **Mutability** | Validates structured Python dictionaries / JSON objects. | Tracks state changes in memory and flushes SQL mutations (`INSERT`, `UPDATE`). |
+| **Field Variations** | Differentiated by operation: `ComplaintCreate` vs `ComplaintUpdate` (all optional) vs `ComplaintResponse` (with UUID & timestamps). | Single unified table mapping representing persistent PostgreSQL table structure. |
+
+### Relationship and Data Flow
+```text
+HTTP Request Body (JSON)
+       ↓
+Pydantic Schema (ComplaintCreate / ComplaintUpdate)
+[Validation, Date parsing, Type coercion]
+       ↓
+SQLAlchemy Model (Complaint)
+[ORM session tracking, DB transaction commit]
+       ↓
+PostgreSQL Storage
+       ↓
+SQLAlchemy Model Instance (Refreshed)
+       ↓
+Pydantic Schema (ComplaintResponse: from_attributes=True)
+[Filters output, Formats timestamps & UUID]
+       ↓
+HTTP Response Body (JSON)
+```
+
+### Partial Update Rule for PATCH
+When a `PATCH /api/complaints/{id}` request is received:
+1. Pydantic parses the request using `ComplaintUpdate`.
+2. `complaint_update.model_dump(exclude_unset=True)` extracts **only** fields that the client explicitly sent.
+3. The existing SQLAlchemy record loaded from PostgreSQL is updated only for those specific keys.
+4. Fields omitted by the client remain untouched in PostgreSQL and are never converted to `NULL`.
+
+---
+
+## Unit 4 Update: Frontend-to-Database Mapping & Data Sanitization
+
+In Unit 4, the React complaint form was mapped to the Pydantic `ComplaintCreate` schema and PostgreSQL `complaints` table.
+
+### Data Mapping Pipeline
+
+```
+HTML Input Element (e.g. <input>, <select>, <textarea>)
+       ↓
+ComplaintForm Component (React controlled input)
+       ↓
+Redux complaintSlice (formData: ComplaintFormData)
+       ↓
+Frontend API Service (`frontend/src/services/api.ts`)
+  [Sanitization Rule: `""` (empty string) → `null`]
+  [Numeric Casting: `"5"` → `5`, `""` → `null`]
+       ↓
+HTTP POST /api/complaints (JSON payload with clean nulls)
+       ↓
+Pydantic Schema (ComplaintCreate: BaseModel)
+  [Validates optional types, parses YYYY-MM-DD dates]
+       ↓
+SQLAlchemy Model (Complaint)
+  [Instantiated with Python None attributes]
+       ↓
+PostgreSQL Storage (`complaints` table)
+  [Persists true SQL `NULL` for missing attributes]
+```
+
+### Empty String Sanitization (`""` → `null`)
+
+In web browsers, clearing a text `<input>` or leaving a `<select>` unselected yields an empty string (`""`). 
+- If raw empty strings were passed to PostgreSQL:
+  1. Date columns (`manufacturing_date`, `expiry_date`, `complaint_date`) would fail PostgreSQL date parsing (`invalid input syntax for type date: ""`).
+  2. Text columns would store empty strings (`""`) rather than SQL `NULL`, violating the intentional nullability invariant established in Unit 2 (empty strings distort audit counts and SQL `IS NULL` filters).
+- **Sanitization Implementation:** `frontend/src/services/api.ts` automatically maps any empty string or whitespace-only field to `null` before sending the JSON payload:
+  ```typescript
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(complaint)) {
+    if (value === "" || (typeof value === "string" && value.trim() === "")) {
+      sanitized[key] = null;
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  ```
+- This ensures PostgreSQL consistently receives and stores true SQL `NULL` for unprovided data.
+
+
+

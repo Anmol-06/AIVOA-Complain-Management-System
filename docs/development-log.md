@@ -170,4 +170,136 @@ Ensure database access is mediated exclusively through FastAPI with strict crede
 ### 5. Next Steps (Pending User Approval)
 - Unit 3: Complaint API endpoints and data ingestion (FastAPI endpoints to create and retrieve complaints).
 
+---
+
+## [2026-09-15] - Unit 3: Complaint CRUD API Implementation
+
+### 1. Objective
+Implement a clean, robust, and type-safe Complaint CRUD API using FastAPI, Pydantic v2, and SQLAlchemy 2.x connected to PostgreSQL on Supabase.
+Enforce the authoritative database record rule for partial updates (`PATCH`) and keep the public API boundary decoupled from database storage models.
+
+### 2. What Was Implemented
+- **Pydantic Schemas (`backend/app/schemas/`):**
+  - Created `backend/app/schemas/__init__.py` and `backend/app/schemas/complaint.py`.
+  - `ComplaintBase`: Base schema containing all 13 complaint domain fields with optional/nullable typing.
+  - `ComplaintCreate`: Schema for submitting new complaints via `POST /api/complaints`.
+  - `ComplaintUpdate`: Schema for partial updates via `PATCH /api/complaints/{id}`.
+  - `ComplaintResponse`: Schema for API responses including UUID `id`, domain fields, and `created_at`/`updated_at` audit timestamps (`from_attributes=True`).
+- **RESTful Routes (`backend/app/api/routes/complaints.py`):**
+  - `POST /api/complaints`: Validates payload, persists `Complaint` model to PostgreSQL, commits, and returns HTTP 201 with generated UUID.
+  - `GET /api/complaints`: Queries and returns all complaints ordered newest first (`created_at.desc()`).
+  - `GET /api/complaints/{complaint_id}`: Retrieves a single complaint by UUID; returns HTTP 404 if not found.
+  - `PATCH /api/complaints/{complaint_id}`: Retrieves existing record from PostgreSQL, applies only explicitly supplied fields (`exclude_unset=True`), commits, and returns HTTP 200. Returns HTTP 404 if nonexistent.
+- **Application Integration (`backend/app/main.py`):**
+  - Mounted `complaints_router` under prefix `/api/complaints`.
+  - Bumped API version to `0.3.0`.
+- **Living Documentation (`docs/`):**
+  - Updated `docs/architecture.md`: Documented end-to-end data flow (React → HTTP/JSON → FastAPI → Pydantic → SQLAlchemy → PostgreSQL).
+  - Updated `docs/database.md`: Documented Pydantic validation boundary vs. SQLAlchemy persistence layer.
+  - Updated `docs/decisions.md`: Added ADR-012 (Schema/Model separation) and ADR-013 (Authoritative DB for PATCH).
+  - Updated `docs/interview-notes.md`: Added Questions 15–20 explaining Pydantic vs SQLAlchemy, POST vs PATCH, dependency injection, and partial update mechanics.
+  - Updated `docs/development-log.md`: Appended Unit 3 changelog.
+
+### 3. What Was Intentionally NOT Implemented
+- **No Groq / LangGraph / AI workflow code:** Deferred to AI phase.
+- **No Document Upload / OCR / PDF extraction:** Deferred to document ingestion phase.
+- **No Frontend Complaint Form / Redux Complaint Slice:** Kept frontend foundation clean and focused.
+- **No Authentication / RBAC:** Deferred to security phase.
+- **No Alembic Migration Tooling:** Deferred until schema modifications require versioned migrations.
+
+### 4. Verification & Testing Performed
+- **End-to-End API Test Suite (`backend/test_crud_verification.py`):**
+  - Executed test suite against live Uvicorn server and Supabase PostgreSQL.
+  - **Step 1 (Health Check):** `GET /api/health` returned HTTP 200 with database status `connected`.
+  - **Step 2 (POST Complaint):** `POST /api/complaints` with realistic Paracetamol 500mg batch `BATCH-2026-001` test data returned HTTP 201 Created with generated UUID (`f505cbb8-7b76-4b0b-82ad-291e39ed7c7f`).
+  - **Step 3 (GET List):** `GET /api/complaints` returned HTTP 200 with list containing the newly created complaint.
+  - **Step 4 (GET Single):** `GET /api/complaints/{id}` returned HTTP 200 with exact matching data.
+  - **Step 5 (PATCH Partial Update):** Sent payload changing only `quantity_affected` from 5 to 8. Confirmed:
+    - `quantity_affected` was updated to 8.
+    - `customer_name`, `product_name`, `batch_lot_number`, and all other fields remained completely unchanged.
+  - **Step 6 (404 Error Handling):** Verified that nonexistent UUID (`00000000-0000-0000-0000-000000000000`) returns HTTP 404 on both GET and PATCH.
+  - **Step 7 (422 Validation Error):** Verified that invalid payload (`quantity_affected: "not-an-integer"`) is rejected by Pydantic with HTTP 422 Unprocessable Entity.
+  - **Step 8 (Direct DB Inspection):** Queried PostgreSQL directly via SQLAlchemy and confirmed the complaint was updated to quantity 8.
+  - **Step 9 (Database Cleanup):** Deleted the test record from PostgreSQL and confirmed row count in `complaints` table is back to `0`.
+- **Frontend Regression Check:**
+  - Ran `npm run build` and `npm run lint` in `frontend/`: Passed with 0 errors.
+- **Git Security Verification:**
+  - Ran `git status`: Confirmed `backend/.env` remains strictly untracked.
+
+### 5. Next Steps (Pending User Approval)
+- Unit 4: Frontend Complaint State & Intake Form UI (wiring Redux Toolkit complaint slice and interactive intake form to the backend CRUD API).
+
+---
+
+## [2026-09-15] - Unit 4: Pharmaceutical Complaint Intake Form & Redux State Integration
+
+### 1. Objective
+Build the actual pharmaceutical customer complaint intake form on the React frontend, connect it to Redux Toolkit for unified form state management, and integrate it with the existing FastAPI `POST /api/complaints` endpoint and Supabase PostgreSQL persistence.
+Provide a clean two-column QMS layout featuring a placeholder for the future AI assistant while strictly preserving all existing Unit 1–3 architecture and historical documentation.
+
+### 2. What Was Implemented
+- **Redux State Management (`frontend/src/store/`):**
+  - Created `frontend/src/store/slices/complaintSlice.ts`:
+    - Defined typed `ComplaintFormData` matching the 13 backend domain fields.
+    - Defined `ComplaintState` tracking `formData`, `isSaving` (boolean), `error` (string | null), `successMessage` (string | null), and `savedComplaintId` (string | null).
+    - Created clean reducers and actions: `updateComplaintField`, `resetComplaintForm`, `setSaving`, `setComplaintError`, `setComplaintSuccess`, `setSavedComplaintId`.
+  - Registered `complaintReducer` in `frontend/src/store/index.ts` alongside existing `appReducer`.
+- **Frontend API Service (`frontend/src/services/api.ts`):**
+  - Created typed `createComplaint(complaint: ComplaintFormData): Promise<ComplaintResponse>`.
+  - Configured dynamic base URL from `import.meta.env.VITE_API_BASE_URL` with fallback to `http://localhost:8000`.
+  - Implemented client-side empty string sanitization (`""` → `null`) to maintain SQL nullability and prevent date parsing errors in PostgreSQL.
+  - Implemented numeric casting for `quantity_affected` (converts non-empty strings to numbers).
+  - Handled non-2xx HTTP responses with descriptive error messages.
+- **Controlled Complaint Form Component (`frontend/src/components/complaint/ComplaintForm.tsx`):**
+  - Built full pharma intake form grouped into 4 accessible fieldsets:
+    1. *Origin & Customer Details*: Complaint Source, Customer Name.
+    2. *Product & Batch Identification*: Product Name, Product Strength/Grade, Batch/Lot Number, Manufacturing Date, Expiry Date, Quantity Affected.
+    3. *Complaint Details*: Complaint Type, Complaint Date, Detailed Complaint Description.
+    4. *Initial Assessment & QA Priority*: Initial Severity (Low, Medium, High, Critical), Priority (Low, Medium, High, Urgent).
+  - Wired all inputs as controlled components dispatching `updateComplaintField` on change.
+  - Built Reset Form button (dispatches `resetComplaintForm` and clears status alerts).
+  - Built Save Complaint button with loading spinner, submit prevention, and button disabling during requests.
+  - Added clear success notification displaying the generated PostgreSQL UUID upon success.
+  - Added error alert banner preserving all entered data upon network or validation failures.
+- **Two-Column QMS Workspace Layout (`frontend/src/App.tsx` & `frontend/src/index.css`):**
+  - Implemented responsive two-column grid layout in `App.tsx`:
+    - Left column: Full `ComplaintForm` component.
+    - Right column: AI Complaint Intake Assistant placeholder card.
+  - Styled with Google Inter typography, accessible focus indicators, clean fieldset borders, and badge chips.
+  - Configured responsive media queries to stack columns on mobile/tablet screens.
+  - Updated `frontend/.env.example` with `VITE_API_BASE_URL=http://localhost:8000`.
+
+### 3. What Was Intentionally NOT Implemented
+- **No Groq / LangGraph / AI workflow code:** Right assistant panel is strictly a visual placeholder.
+- **No Document Upload / OCR / PDF parsing:** Deferred to Unit 5.
+- **No Authentication / RBAC:** Deferred to security phase.
+- **No CAPA / Root Cause / Investigation tables:** Fact intake only.
+
+### 4. Verification & Testing Performed
+- **Frontend Type-Check & Production Build:**
+  - Command: `npm run build` inside `frontend/`.
+  - Result: Passed with zero errors. Transformed 31 modules into production assets in 153ms.
+- **Frontend Linter:**
+  - Command: `npm run lint` inside `frontend/`.
+  - Result: Passed with 0 errors and 0 warnings.
+- **End-to-End Browser Automation Verification (Playwright MCP):**
+  - Automated full browser session running against live FastAPI backend (`http://localhost:8000`) and Vite dev server (`http://localhost:5173`).
+  - Tested:
+    1. Form field entry across all 4 fieldsets (Customer Name, Product Name, Batch Number, Dates, Quantity, Description, Severity, Priority).
+    2. Reset Form button: verified complete clearance of inputs and status messages.
+    3. Complaint submission: submitted realistic pharmaceutical complaint (`Paracetamol 500 mg`, batch `BATCH-2026-001`, quantity `5`, severity `High`, priority `Urgent`).
+    4. Network response: verified HTTP 201 Created from `POST /api/complaints`.
+    5. Success alert: verified green banner appeared displaying the returned UUID: `96406bba-cc2a-4f6b-bb3f-44eda2ba25ac`.
+    6. Preserved inputs: confirmed entered data was not lost after saving.
+    7. Layout & responsiveness: captured visual artifacts on desktop and verified responsive layout.
+- **PostgreSQL / Supabase Verification & Cleanup:**
+  - Queried Supabase directly via SQLAlchemy script: confirmed record `96406bba-cc2a-4f6b-bb3f-44eda2ba25ac` was successfully stored with all 13 fields.
+  - Cleaned up test record: executed `DELETE FROM complaints WHERE id = '96406bba-cc2a-4f6b-bb3f-44eda2ba25ac'`.
+  - Confirmed database row count is back to `0` (zero dirty or fake records remaining).
+
+### 5. Next Steps (Pending User Approval)
+- Unit 5: AI Document Extraction & Natural Language Complaint Intake (LangGraph + Groq LLM workflow).
+
+
+
 

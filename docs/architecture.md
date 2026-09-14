@@ -141,13 +141,146 @@ The **AIVOA Customer Complaint Management System** is an AI-powered enterprise a
 2. **Credential Isolation:** Privileged database credentials (`DATABASE_URL`) exist solely in `backend/.env` on the server and are never exposed via network responses, API routes, or client bundles.
 3. **Connection Pooling:** SQLAlchemy manages connection pooling (`pool_pre_ping=True`, `pool_recycle=300`) to ensure resilient connectivity with Supabase's connection poolers.
 
+## Unit 3 Update: Complaint CRUD API Layer & End-to-End Data Flow
+
+```
++---------------------------------------------------------------------------------------+
+|                                    Client Browser                                     |
+|                                React + Redux Toolkit                                  |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            | HTTP Request (JSON Payload)
+                                            v
++---------------------------------------------------------------------------------------+
+|                                  FastAPI Routing Layer                                |
+|             (POST, GET, PATCH endpoints in api/routes/complaints.py)                  |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            | Request Validation / Deserialization
+                                            v
++---------------------------------------------------------------------------------------+
+|                                  Pydantic Validation                                  |
+|         (ComplaintCreate, ComplaintUpdate: type coercion, optionality checks)         |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            | Dependency Injection (Depends(get_db))
+                                            v
++---------------------------------------------------------------------------------------+
+|                                  SQLAlchemy 2.x ORM                                   |
+|      (Session management: db.add(), db.commit(), db.refresh(), db.query(Complaint))    |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            | SQL Queries & Mutations via psycopg2
+                                            v
++---------------------------------------------------------------------------------------+
+|                               PostgreSQL (Supabase)                                   |
+|                     (Authoritative persistent complaints table)                       |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            | Persisted ORM Entity
+                                            v
++---------------------------------------------------------------------------------------+
+|                              Pydantic Response Model                                  |
+|           (ComplaintResponse with from_attributes=True: UUID & timestamps)            |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            | Serialized JSON Response (200 / 201)
+                                            v
++---------------------------------------------------------------------------------------+
+|                                    Client Browser                                     |
++---------------------------------------------------------------------------------------+
+```
+
+### Architectural Responsibilities across the Boundary
+1. **Pydantic Schemas:** Represent the **public API contract**. They enforce input validation, parse dates, cast integers, and sanitize responses without exposing internal database structures or private fields.
+2. **SQLAlchemy Models:** Represent **persistence and database storage**. They define table structures, SQL column types, constraints, and relational mappings in PostgreSQL.
+3. **Database Authoritative Principle for PATCH:** The existing row in PostgreSQL is the single source of truth. When applying updates via `PATCH`, only fields explicitly provided in the request payload (`exclude_unset=True`) are updated. Unspecified fields retain their existing values and are never overwritten with `NULL`.
+
 ---
 
-## Core Security and Architecture Principles
+## Unit 4 Update: Frontend Complaint Form & Redux State Architecture
 
-1. **Strict Secret Isolation:** Private API keys (`GROQ_API_KEY`) and database credentials remain exclusively on the server. The browser client never touches or receives secret keys.
-2. **Model Agnosticism:** The LLM model name is configured via server environment variables, enabling zero-code model upgrades.
-3. **Separation of Concerns:** Client UI state is decoupled from persistent database records.
-4. **Human-in-the-Loop:** In pharmaceutical quality control, AI recommendations must be human-reviewed and confirmed before final regulatory filing.
-5. **Architectural Realism:** The system is an MVP inspired by pharmaceutical Quality Management System (QMS) practices; regulatory compliance claims are not made without audited infrastructure.
+In Unit 4, the pharmaceutical complaint intake form was implemented on the React client, wired to Redux Toolkit for unified form state management, and integrated with the FastAPI `POST /api/complaints` endpoint.
+
+```
++---------------------------------------------------------------------------------------+
+|                                    Client Browser                                     |
+|                                                                                       |
+|   +-------------------------------------------------------------------------------+   |
+|   |                        ComplaintForm Component (React)                        |   |
+|   |   Controlled inputs across 4 sections: Origin, Product, Complaint, Priority   |   |
+|   +-----------------------+-------------------------------+-----------------------+   |
+|                           |                               ^                           |
+|             User Types /  |                               | Reads State               |
+|             Selects Field |                               | (useAppSelector)          |
+|                           v                               |                           |
+|   +-------------------------------------------------------+-----------------------+   |
+|   |                       complaintSlice (Redux Toolkit)                          |   |
+|   |   State: formData (13 fields), isSaving, error, successMessage, savedId       |   |
+|   +---------------------------------------+---------------------------------------+   |
+|                                           |                                           |
+|                             User Clicks   | Dispatch setSaving(true)                  |
+|                           Save Complaint  | Calls createComplaint()                   |
+|                                           v                                           |
+|   +-------------------------------------------------------------------------------+   |
+|   |                        frontend/src/services/api.ts                           |   |
+|   |   - Sanitizes empty strings to null                                           |   |
+|   |   - Reads VITE_API_BASE_URL (fallback: http://localhost:8000)                 |   |
+|   |   - Issues fetch(POST /api/complaints, { headers, body: JSON })               |   |
+|   +---------------------------------------+---------------------------------------+   |
++-------------------------------------------|-------------------------------------------+
+                                            |
+                                            | HTTP POST /api/complaints (JSON)
+                                            v
++---------------------------------------------------------------------------------------+
+|                               FastAPI Application Gateway                             |
+|   - CORS validation (allows http://localhost:5173)                                    |
+|   - Pydantic ComplaintCreate schema validation & type coercion                        |
+|   - Dependency injection (db: Session = Depends(get_db))                              |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            | SQLAlchemy ORM Operations
+                                            v
++---------------------------------------------------------------------------------------+
+|                                 SQLAlchemy 2.x ORM                                    |
+|   - Instantiates Complaint model with validated attributes                            |
+|   - db.add(new_complaint) -> db.commit() -> db.refresh(new_complaint)                 |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            | SQL INSERT via psycopg2
+                                            v
++---------------------------------------------------------------------------------------+
+|                             PostgreSQL Storage (Supabase)                             |
+|   - Generates persistent UUIDv4 primary key and UTC audit timestamps                  |
+|   - Stores clean complaint record (NULL for unsupplied fields)                        |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            | HTTP 201 Created (JSON with UUID)
+                                            v
++---------------------------------------------------------------------------------------+
+|                                    Client Browser                                     |
+|   - api.ts parses JSON response                                                       |
+|   - Dispatches setSavedComplaintId(id), setComplaintSuccess("..."), setSaving(false)  |
+|   - ComplaintForm displays prominent green success alert with persistent UUID         |
+|   - Form data remains preserved (never accidentally discarded)                        |
++---------------------------------------------------------------------------------------+
+```
+
+### Core Architectural Principles & Security Rules
+
+1. **Redux vs. PostgreSQL (Client State vs. Persistent Storage):**
+   - **Redux** manages transient, client-side application state (what the user is currently typing, whether a network request is pending, error messages, and the returned confirmation ID). Redux state lives purely in browser memory and ceases to exist if the tab is closed or reloaded.
+   - **PostgreSQL** provides authoritative, durable, ACID-compliant storage for finalized pharmaceutical records. Once committed to PostgreSQL, the complaint is permanent, auditable, and accessible across the enterprise.
+
+2. **Backend Authoritative Validation:**
+   - The React frontend performs only lightweight, non-blocking validation (e.g., verifying that non-empty quantities are valid numbers and dates follow `YYYY-MM-DD`).
+   - The FastAPI/Pydantic layer remains the **sole authoritative validator**. Because real-world pharmaceutical complaints frequently arrive incomplete, the frontend does not prematurely block submission of partial data that the database schema intentionally permits.
+   - If backend validation fails, FastAPI returns standard HTTP 422 with actionable error details, which the frontend displays without losing user input.
+
+3. **Frontend Secret Isolation (Why Secrets Never Belong in Frontend `.env`):**
+   - Vite environment variables prefixed with `VITE_` (such as `VITE_API_BASE_URL`) are embedded directly into compiled JavaScript bundles during build time.
+   - Any end-user can view these strings by opening browser DevTools or reading network bundles.
+   - Sensitive credentials—such as `DATABASE_URL`, database passwords, or `GROQ_API_KEY`—must **never** be placed in frontend code or frontend environment variables. They reside exclusively in server-side configuration (`backend/.env`).
+
+
 

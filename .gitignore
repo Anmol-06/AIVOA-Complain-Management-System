@@ -46,3 +46,4 @@ dist-ssr/
 .idea/
 *.swp
 *.swo
+.playwright-mcp/

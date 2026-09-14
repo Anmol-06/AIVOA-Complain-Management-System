@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from .db.database import init_db, check_db_connection
+from .api.routes.complaints import router as complaints_router
 
 # Load environment variables from .env file if it exists locally
 load_dotenv()
@@ -23,7 +24,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AIVOA Complaint Management System API",
     description="Backend API for AI-powered Pharmaceutical Complaint Management",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -39,6 +40,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount API Routers
+app.include_router(complaints_router)
 
 
 @app.get("/")
