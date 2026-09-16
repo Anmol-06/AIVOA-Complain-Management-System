@@ -289,6 +289,74 @@ By placing `GROQ_MODEL` in `.env`, we maintain **model agnosticism**; changing t
 - If model names were hardcoded in application logic, updating a model would require code changes, regression testing, and code commits.
 - By configuring `GROQ_MODEL` in `backend/.env`, operations teams can switch or upgrade models instantaneously with zero code modifications.
 
+---
 
+## Unit 6: Edit Complaint Tool & Conditional AI Workflow Concepts
 
+### Question 33: How does partial update safety work in conversational AI edit tools, and why must unmentioned fields be preserved?
+**Answer:**
+- In an edit workflow, the user usually supplies corrections to one or two specific fields (e.g. *"Actually, 50 tablets were affected."*).
+- If the system asked the LLM to regenerate the entire complaint from scratch, the model might hallucinate details it wasn't instructed to change, alter dates, or drop existing fields that were not mentioned.
+- To guarantee partial update safety:
+  1. The LLM is constrained by prompt and schema (`ComplaintChanges`) to output **only** the fields explicitly requested to change.
+  2. All unmentioned fields must be `null` in the change set.
+  3. The merge node takes the authoritative baseline complaint and overlays only non-null, validated changes.
+  4. Unmentioned fields are guaranteed to remain 100% untouched.
 
+---
+
+### Question 34: What is a conditional workflow in LangGraph, and how did we implement early termination for ambiguous edit requests?
+**Answer:**
+- In LangGraph, workflows do not have to be strictly linear. A graph can contain **conditional edges** using `add_conditional_edges(source_node, routing_function, path_map)`.
+- In Unit 6, after `validate_normalize_changes`, the router function inspects the state:
+  ```python
+  def route_after_edit_validation(state: ComplaintEditGraphState) -> str:
+      if state.get("should_proceed"):
+          return "merge_changes"
+      return "build_edit_proposal"
+  ```
+- If the edit request is ambiguous (*"Change the quantity"* with no number), not an edit request (*"What is the weather?"*), or has no valid changes, `should_proceed` is `False`.
+- The graph bypasses `merge_changes` and `reassess_risk` entirely, routing straight to `build_edit_proposal` with `needs_clarification = True` and explanatory guidance.
+- This prevents LLM hallucination of missing values, saves latency and token cost, and provides deterministic safety.
+
+---
+
+### Question 35: Why can't we rely solely on LLM prompt instructions to restrict editable fields (defense-in-depth allowlist)?
+**Answer:**
+- Prompt instructions are advisory. Complex LLMs can suffer from prompt injection, jailbreaking, or stochastic drift where they return unexpected keys (e.g. attempting to alter `id`, `created_at`, or internal system flags).
+- Defense-in-depth requires that the **application code** enforces strict authorization boundaries regardless of what the LLM generates:
+  ```python
+  safe_changes = {k: v for k, v in raw_changes.items() if k in EDITABLE_COMPLAINT_FIELDS}
+  ```
+- Any unauthorized or unexpected field is automatically filtered out before merging with the baseline complaint.
+
+---
+
+### Question 36: Why should the backend query PostgreSQL directly for complaint context when `complaint_id` is supplied, rather than trusting the client?
+**Answer:**
+- In web applications, client-side data (like Redux or local storage) can become stale due to network latency, background tasks, or concurrent updates by another user.
+- If the server trusted the client's payload as the baseline, an outdated browser tab could overwrite newer data committed in PostgreSQL.
+- By treating PostgreSQL as the **authoritative system of record**, the backend fetches the fresh persisted complaint directly via SQLAlchemy. Only for unsaved drafts (where no database record exists yet) does the server fall back to using the client's form payload.
+
+---
+
+### Question 37: Why does clicking "Apply Changes" only update Redux instead of saving to the database?
+**Answer:**
+- Under Good Manufacturing Practice (GMP), an AI recommendation is strictly advisory. Applying an AI proposal to the user's form allows the human QA specialist to:
+  1. Visually verify the modified fields on the actual complaint form.
+  2. Continue editing or refining other fields if necessary.
+  3. Intentionally decide when the record is ready for formal persistence.
+- Persisting to PostgreSQL occurs only when the user explicitly clicks "Save Complaint" (or invokes `PATCH`), maintaining a clear, auditable human accountability boundary.
+
+---
+
+### Question 38: How does the visual diff proposal pattern support regulatory compliance and human-in-the-loop review?
+**Answer:**
+- Black-box AI mutations create regulatory compliance risks because users cannot readily discern what changed.
+- The visual diff proposal pattern renders a side-by-side comparison:
+  - Exact field name (e.g. `Quantity Affected`)
+  - Current value (`25`)
+  - Proposed value (`50`)
+  - Visual status badge (`Changed`)
+  - Recalculated risk triage & reasoning
+- This provides transparent auditability: the human reviewer can inspect the exact delta and understand the clinical rationale before approving the change.

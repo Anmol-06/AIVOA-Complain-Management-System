@@ -772,3 +772,143 @@ body {
   font-size: 0.95rem;
 }
 
+/* =====================================================================
+   UNIT 6: ASSISTANT TABS & EDIT TOOL STYLES
+   ===================================================================== */
+
+.assistant-tabs {
+  display: flex;
+  gap: 6px;
+  background-color: var(--color-bg-base);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  border: 1px solid var(--color-border);
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.tab-btn:hover {
+  color: var(--color-text-primary);
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.tab-btn.active {
+  background-color: var(--color-bg-card);
+  color: #60a5fa;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.active-context-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background-color: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+}
+
+.context-icon {
+  font-size: 1rem;
+}
+
+.saved-id-tag {
+  color: #a78bfa;
+  font-size: 0.75rem;
+  font-family: monospace;
+}
+
+/* Proposed Changes Diff Table */
+.changes-diff-card {
+  background-color: var(--color-bg-base);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.diff-header-row {
+  display: grid;
+  grid-template-columns: 2fr 2fr 30px 2fr;
+  padding: 8px 12px;
+  background-color: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.diff-item-row {
+  display: grid;
+  grid-template-columns: 2fr 2fr 30px 2fr;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 0.82rem;
+}
+
+.diff-field-name {
+  font-weight: 600;
+  color: #93c5fd;
+}
+
+.diff-old-val {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+  word-break: break-word;
+}
+
+.diff-arrow {
+  color: #34d399;
+  font-weight: 700;
+  text-align: center;
+}
+
+.diff-new-val {
+  color: #34d399;
+  word-break: break-word;
+}
+
+.diff-preservation-note {
+  padding: 8px 12px;
+  font-size: 0.74rem;
+  color: #94a3b8;
+  background-color: rgba(30, 41, 59, 0.4);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* Clarification Warning */
+.alert-warning.alert-clarification {
+  background-color: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+
+.alert-clarification p {
+  margin: 4px 0 6px 0;
+  color: var(--color-text-primary);
+  font-size: 0.85rem;
+}
+
+

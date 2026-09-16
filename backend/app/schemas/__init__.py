@@ -4,6 +4,11 @@ from .ai import (
     AIRiskAssessment,
     AIComplaintIntakeRequest,
     AIComplaintIntakeResponse,
+    ComplaintChanges,
+    AIComplaintEditExtraction,
+    AIComplaintEditRequest,
+    AIComplaintEditProposal,
+    EDITABLE_COMPLAINT_FIELDS,
 )
 
 __all__ = [
@@ -14,5 +19,10 @@ __all__ = [
     "AIRiskAssessment",
     "AIComplaintIntakeRequest",
     "AIComplaintIntakeResponse",
+    "ComplaintChanges",
+    "AIComplaintEditExtraction",
+    "AIComplaintEditRequest",
+    "AIComplaintEditProposal",
+    "EDITABLE_COMPLAINT_FIELDS",
 ]
 

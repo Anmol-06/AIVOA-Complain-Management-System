@@ -304,6 +304,65 @@ Historical entries are preserved permanently.
   - Operations team can switch or upgrade models instantaneously without code redeployment.
   - Prevents breaking changes when providers retire model checkpoints.
 
+---
 
+## ADR-021: LangGraph Conditional StateGraph for Complaint Edits & Corrections
+- **Date:** 2026-09-16
+- **Status:** Accepted
+- **Context:**
+  When a user supplies natural-language corrections (e.g. *"Actually, 50 tablets were affected."*), the AI workflow must extract only the changed fields, merge them with existing baseline facts, recalculate risk, and present a diff. However, if the user input is ambiguous (*"Change the quantity"* without a value), non-edit, or invalid, running merge and risk recalculation would produce corrupted or misleading proposals.
+- **Decision:**
+  Implement a dedicated conditional LangGraph `complaint_edit_graph`:
+  - Nodes: `extract_edit_changes` -> `validate_normalize_changes` -> `merge_changes` -> `reassess_risk` -> `build_edit_proposal`.
+  - Conditional Edge: `route_after_edit_validation` checks `should_proceed`. If the request is ambiguous, non-edit, or contains no valid changes, it bypasses `merge_changes` and `reassess_risk` entirely and routes directly to `build_edit_proposal` with `needs_clarification = True`.
+- **Consequences:**
+  - Prevents LLM hallucination of missing values.
+  - Avoids wasteful risk inference on invalid or ambiguous prompts.
+  - Provides deterministic, audit-friendly execution flows.
 
+---
 
+## ADR-022: Defense-in-Depth Backend Editable Field Allowlist (`EDITABLE_COMPLAINT_FIELDS`)
+- **Date:** 2026-09-16
+- **Status:** Accepted
+- **Context:**
+  In LLM-driven editing workflows, prompt instructions alone cannot guarantee that an LLM will not hallucinate unexpected keys, attempt to mutate primary keys, or overwrite audit timestamps.
+- **Decision:**
+  Enforce a hardcoded, immutable allowlist in the backend validation layer:
+  `EDITABLE_COMPLAINT_FIELDS = {'complaint_source', 'customer_name', 'product_name', 'product_strength', 'batch_lot_number', 'quantity_affected', 'manufacturing_date', 'expiry_date', 'complaint_type', 'complaint_date', 'detailed_description', 'initial_severity', 'priority'}`.
+  Any key extracted by the LLM that is not in this set is silently discarded during validation.
+- **Consequences:**
+  - Complete protection against unexpected schema pollution or prompt injection attacks aiming to overwrite internal attributes (`id`, `created_at`, `updated_at`).
+  - Strict type contracts between LLM output and internal domain models.
+
+---
+
+## ADR-023: Persisted Complaint Authority Over Client Cache
+- **Date:** 2026-09-16
+- **Status:** Accepted
+- **Context:**
+  When editing an existing complaint with a `complaint_id`, the client sends its current form data, but client state could be stale due to network latency, concurrent edits by other QA personnel, or browser tab staleness.
+- **Decision:**
+  FastAPI queries PostgreSQL directly via SQLAlchemy to load the authoritative complaint record when `complaint_id` is supplied:
+  - If found, the database row is converted to a dictionary and serves as the merge baseline.
+  - If the UUID does not exist, an HTTP 404 is returned immediately.
+  - Only for unsaved drafts (`complaint_id` is None/empty) does the server use the client's submitted form payload as the complaint context.
+- **Consequences:**
+  - Database integrity is prioritized: edits are always applied on top of ground-truth persisted facts.
+  - Eliminates stale cache overwrites.
+
+---
+
+## ADR-024: Visual Diff Proposal Pattern & Redux-Only Application Boundary
+- **Date:** 2026-09-16
+- **Status:** Accepted
+- **Context:**
+  When an AI tool suggests modifications to a pharmaceutical complaint, QA personnel must clearly understand what changed, what was preserved, and must maintain final control.
+- **Decision:**
+  - The AI edit endpoint returns an `AIComplaintEditProposal` containing a structured field-by-field diff (`field_name`, `current_value`, `proposed_value`, `is_changed`).
+  - The UI displays an interactive comparison table highlighting modified values with arrow indicators (➔) and a Preservation Guarantee banner.
+  - Clicking "Apply Changes to Form" dispatches an action to the client-side Redux store (`complaintSlice`) ONLY.
+  - No database write occurs until the human operator explicitly clicks "Save Complaint" or invokes `PATCH /api/complaints/{id}`.
+- **Consequences:**
+  - Human QA specialists remain 100% in control of data persistence.
+  - Absolute compliance with pharmaceutical GMP principles of accountability and auditability.

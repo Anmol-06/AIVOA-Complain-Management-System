@@ -387,10 +387,86 @@ Ensure strict anti-hallucination, null safety, human-in-the-loop review, and com
   - Confirmed in-browser human-in-the-loop workflow: "Apply to Complaint Form" populated the left form while keeping it fully editable, with zero automated database mutations.
 
 ### 5. Next Steps (Pending User Approval)
-- Unit 6: Document & Multimodal Complaint Intake (PDF / photo upload, OCR extraction, and document processing).
+- Unit 6: Edit Complaint Tool (conversational natural-language corrections, minimal diff proposals, and conditional LangGraph workflow).
 
+---
 
+## [2026-09-16] - Unit 6: Edit Complaint Tool & Conditional AI Workflow
 
+### 1. Objective
+Implement the conversational **Edit / Correct Complaint Tool** for the AIVOA Customer Complaint Management System:
+Enable QA specialists to provide natural-language corrections (e.g. *"Actually, 50 tablets were affected."*) against an existing complaint.
+The AI extracts **ONLY** the minimal requested changes, validates them against an explicit backend allowlist, merges them with existing facts, dynamically recalculates risk triage, and presents an interactive visual diff for human verification.
+Enforce conditional routing to safely halt early on ambiguous queries, maintain persisted complaint authority from PostgreSQL when `complaint_id` is supplied, and guarantee zero direct database writes by the AI edit tool.
 
+### 2. What Was Implemented
+- **AI Schemas & Validation Allowlist (`backend/app/schemas/ai.py` & `backend/app/schemas/__init__.py`):**
+  - Defined `EDITABLE_COMPLAINT_FIELDS` allowlist containing the 13 valid domain fields.
+  - `ComplaintChanges`: Model containing all 13 fields as optional, representing strictly the delta.
+  - `AIComplaintEditExtraction`: Schema for Groq structured output capturing `changes`, `needs_clarification`, `clarification_reason`, and `is_edit_request`.
+  - `AIComplaintEditRequest`: Validates incoming edit requests (`edit_instruction`, optional `complaint_id`, optional `current_complaint`).
+  - `ComplaintFieldDiff`: Represents a single field's diff (`field_name`, `current_value`, `proposed_value`, `is_changed`).
+  - `AIComplaintEditProposal`: Comprehensive response schema with `complaint_id`, `original_complaint`, `merged_complaint`, `changes_summary`, `diff`, `recalculated_risk`, and `needs_clarification`.
+- **System Prompts (`backend/app/ai/prompts.py`):**
+  - Created `EDIT_EXTRACTION_SYSTEM_PROMPT`: Enforces strict minimal change extraction, anti-hallucination, mandatory omission of unmentioned fields, explicit flagging of ambiguous inputs without inventing values, and updating descriptions when clinical facts are provided.
+- **LangGraph Conditional StateGraph (`backend/app/ai/complaint_graph.py`):**
+  - Implemented `complaint_edit_graph` with 5 nodes:
+    1. `extract_edit_changes`: Invokes Groq with `AIComplaintEditExtraction` structured schema.
+    2. `validate_normalize_changes`: Filters keys against `EDITABLE_COMPLAINT_FIELDS`, normalizes numeric quantities, trims strings, and sets `should_proceed`.
+    3. `merge_changes`: Overlays validated changes onto the authoritative baseline complaint.
+    4. `reassess_risk`: Re-runs risk assessment using the merged complaint facts via `assess_complaint_risk`.
+    5. `build_edit_proposal`: Constructs the field-by-field diff and response payload.
+  - Implemented conditional router `route_after_edit_validation`: If `should_proceed` is False (ambiguous, non-edit, or no valid changes), it bypasses `merge_changes` and `reassess_risk` entirely, routing directly to `build_edit_proposal` with safe clarification feedback.
+- **FastAPI AI Route (`backend/app/api/routes/ai.py`):**
+  - Mounted `POST /api/ai/complaint-edit`.
+  - Validates `complaint_id` UUID format if provided.
+  - Enforces **Persisted Record Authority**: Queries PostgreSQL directly via SQLAlchemy to load the authoritative record if `complaint_id` is supplied. Falls back to client form payload for unsaved drafts.
+  - Guarantees 0 database writes (100% read-only / advisory).
+  - Handles missing API keys (503), unprocessable entities (422), and missing records (404).
+- **Automated Test Suite (`backend/test_ai_edit_verification.py`):**
+  - Implemented 7 automated verification tests:
+    - Test 1 (Single field edit): Verified 25 -> 50 quantity update with all other fields preserved.
+    - Test 2 (Multi-field edit): Verified simultaneous customer and quantity update.
+    - Test 3 (Ambiguity handling): Verified "Change the quantity" halted at validation, skipped merge/risk, and returned clarification.
+    - Test 4 (Anti-hallucination & allowlist): Verified unmentioned fields were not extracted and allowlist discarded illegal fields.
+    - Test 5 (Risk reassessment): Verified severe clinical event triggered Critical severity and Urgent priority.
+    - Test 6 (Database safety): Confirmed PostgreSQL row count remained exactly 2 (delta = 0).
+    - Test 7 (Persisted record authority): Verified UUID lookup, 404 for nonexistent UUID, and 422 for bad UUID.
+  - Result: 7/7 tests passed.
+- **Frontend State Management (`frontend/src/store/` & `frontend/src/services/api.ts`):**
+  - `frontend/src/services/api.ts`: Added `runComplaintEdit(request: AIComplaintEditRequest)`.
+  - `frontend/src/store/slices/aiSlice.ts`: Added `activeTab` ('intake' | 'edit'), `editInstruction`, `isEditing`, `editProposal`, `editError`, and reducers.
+  - `frontend/src/store/slices/complaintSlice.ts`: Added `applyComplaintChanges` reducer to merge AI proposed changes into active form fields without wiping untouched data.
+- **Frontend AI Assistant UI (`frontend/src/components/ai/AIAssistant.tsx` & `index.css`):**
+  - Added tab switcher (`⚡ New Complaint Intake` vs `✏️ Edit / Correct Complaint`).
+  - Implemented Active Context banner displaying currently loaded product, batch, quantity, and customer.
+  - Added 4 quick edit sample chips for rapid testing.
+  - Built Proposed Change Set Diff Table showing Field, Current Value, and Proposed Value with arrow indicators (➔).
+  - Added Preservation Guarantee banner.
+  - Added Recalculated Risk Assessment card showing updated severity, priority, reasoning, and QA next steps.
+  - Added "📋 Apply Changes to Form" button with visual confirmation banner.
+  - Production build: `tsc -b && vite build` compiled cleanly in 210ms with 0 errors.
+- **Browser Automation Verification (Playwright MCP):**
+  - Tested live end-to-end flow on `http://localhost:5173/`.
+  - Populated sample complaint (Paracetamol 500 mg, B1234, 25 tablets).
+  - Switched to Edit tab; verified Active Context banner.
+  - Submitted live Groq edit prompt: *"Actually, 50 tablets were affected."*.
+  - Verified diff table displayed `Quantity Affected: 25 ➔ 50`.
+  - Verified recalculated risk assessment displayed.
+  - Clicked "Apply Changes to Form"; verified left form field updated to 50 while all other fields remained intact.
+  - Confirmed left form remained fully editable (typed into customer field).
+  - Verified database row count remained exactly 2 (0 DB writes).
+  - Captured visual screenshot artifact: `unit6_applied_to_form.png`.
 
+### 3. What Was Intentionally NOT Implemented
+- **No Unit 7 / Future Features:** No document extraction, OCR, PDF/DOCX parsing, CAPA, duplicate detection, RAG, auth, or Docker.
+- **No Automatic Database Mutations by AI:** AI proposals remain strictly advisory; persistence boundary remains explicit Save/PATCH actions.
 
+### 4. Verification & Testing Performed
+- **Automated Backend Suite:** `backend/test_ai_edit_verification.py` passed 7/7 tests.
+- **Frontend TypeScript & Build:** `tsc -b && vite build` passed cleanly with zero errors.
+- **Browser Automation:** Playwright MCP completed end-to-end verification and captured screenshots.
+- **Database Count:** PostgreSQL row count verified unchanged at 2.
+
+### 5. Next Steps (Pending User Approval)
+- Stop and await user review for Unit 6.

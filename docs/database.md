@@ -190,6 +190,50 @@ In Unit 5, the AI intake pipeline was integrated into the application. A critica
    - The AI output serves as a **drafting assistant**. The QA specialist reviews the extracted fields, edits any discrepancies, and explicitly triggers persistence by clicking "Save Complaint".
    - This ensures that only human-verified data enters PostgreSQL.
 
+---
 
+## Unit 6 Update: Edit Complaint Tool Database Safety & Persistence Boundary
 
+In Unit 6, the conversational Edit Complaint tool was introduced. This feature interacts with the database under strict architectural and safety invariants:
 
+### 1. Absolute Database Write Isolation (0 Writes on Edit Inference)
+- The endpoint `POST /api/ai/complaint-edit` is strictly **read-only / computational**.
+- It does **not** issue any SQL `INSERT`, `UPDATE`, or `DELETE` statements against PostgreSQL.
+- In automated test suite runs (Test 6) and end-to-end browser verification, the row count of the `complaints` table was verified to remain constant (exactly 2 before, during, and after AI edit proposals).
+- Even when the user clicks **"Apply Changes to Form"**, data is committed only to the browser's Redux state (`complaintSlice`).
+- **Persistence Boundary:** The database is updated if and only if the QA specialist reviews the modified form and explicitly clicks **"Save Complaint"** (or invokes `PATCH /api/complaints/{id}`).
+
+### 2. Persisted Complaint Authority Principle
+- When an existing complaint is edited, the request may provide a `complaint_id` (UUIDv4).
+- **Authoritative Database Lookup:** Rather than blindly trusting the frontend's submitted complaint state (which could be stale due to concurrent edits or tab latency), FastAPI queries PostgreSQL directly:
+  ```python
+  persisted_complaint = (
+      db.query(Complaint)
+      .filter(Complaint.id == uuid.UUID(request.complaint_id))
+      .first()
+  )
+  ```
+- The persisted database entity serves as the authoritative baseline for merging proposed changes.
+- For unsaved drafts (where `complaint_id` is null or empty), the in-memory form values submitted by the client are used as the drafting context.
+
+### 3. Protection of System Columns via Backend Allowlist
+- Database audit and primary key columns (`id`, `created_at`, `updated_at`) must never be modified by AI-generated proposals.
+- The backend enforces `EDITABLE_COMPLAINT_FIELDS`:
+  ```python
+  EDITABLE_COMPLAINT_FIELDS = {
+      "complaint_source",
+      "customer_name",
+      "product_name",
+      "product_strength",
+      "batch_lot_number",
+      "quantity_affected",
+      "manufacturing_date",
+      "expiry_date",
+      "complaint_type",
+      "complaint_date",
+      "detailed_description",
+      "initial_severity",
+      "priority",
+  }
+  ```
+- Any attempts (whether malicious or accidental LLM hallucination) to output non-whitelisted keys are automatically rejected before merging, protecting database integrity.

@@ -123,3 +123,60 @@ export async function runComplaintIntake(
   return (await response.json()) as AIComplaintIntakeResponse;
 }
 
+export interface AIComplaintEditRequest {
+  complaint_id?: string | null;
+  current_complaint?: Partial<ComplaintFormData> | null;
+  edit_instruction: string;
+}
+
+export interface AIComplaintEditProposal {
+  complaint_id?: string | null;
+  is_valid_edit: boolean;
+  needs_clarification: boolean;
+  clarification_message?: string | null;
+  original_complaint: Record<string, any>;
+  requested_changes: Record<string, any>;
+  updated_complaint: Record<string, any>;
+  risk_assessment?: AIRiskAssessment | null;
+}
+
+/**
+ * Submits a natural language edit instruction against an existing complaint.
+ * Executes LangGraph edit workflow on the server and returns structured proposed changes.
+ * Note: Never saves to PostgreSQL automatically.
+ */
+export async function runComplaintEdit(
+  request: AIComplaintEditRequest
+): Promise<AIComplaintEditProposal> {
+  const response = await fetch(`${API_BASE_URL}/api/ai/complaint-edit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    let errorMessage = `AI edit failed (HTTP ${response.status})`;
+    try {
+      const errorJson = await response.json();
+      if (errorJson?.detail) {
+        if (typeof errorJson.detail === "string") {
+          errorMessage = errorJson.detail;
+        } else if (Array.isArray(errorJson.detail)) {
+          errorMessage = errorJson.detail
+            .map((err: any) => `${err.loc?.join(".") || "Field"}: ${err.msg}`)
+            .join(" | ");
+        }
+      }
+    } catch {
+      // Fallback to generic message
+    }
+    throw new Error(errorMessage);
+  }
+
+  return (await response.json()) as AIComplaintEditProposal;
+}
+
+

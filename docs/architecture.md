@@ -350,6 +350,99 @@ In Unit 5, the first AI vertical slice was added: an AI-assisted intake pipeline
    - `GROQ_API_KEY` exists strictly on the server (`backend/.env`).
    - `GROQ_MODEL` is configurable via environment variables, avoiding hard-coded deprecated models.
 
+## Unit 6 Update: Edit Complaint Tool & Conditional LangGraph Workflow
 
+In Unit 6, the **Edit / Correct Complaint Tool** was introduced. It enables Quality Assurance personnel to supply conversational corrections (e.g., *"Actually, 50 tablets were affected."* or *"Change customer to XYZ Hospital."*) against an existing complaint.
 
+The system extracts **ONLY** the minimal requested changes, strictly preserves all unmentioned facts, dynamically recalculates preliminary risk, and presents an interactive before/after diff for human verification.
 
+```
+[User enters correction prompt in React AIAssistant (Edit Tab)]
+                             │
+                             ▼
+[POST /api/ai/complaint-edit (JSON: {"edit_instruction": "...", "complaint_id": "...", "current_complaint": {...}})]
+                             │
+                             ▼
+[FastAPI Route (backend/app/api/routes/ai.py)]
+  - Validates request schema (AIComplaintEditRequest)
+  - Resolves Authoritative Complaint:
+      * If complaint_id provided -> Fetch directly from PostgreSQL (Supabase) via SQLAlchemy
+      * If no complaint_id (unsaved draft) -> Use current_complaint from Redux form payload
+                             │
+                             ▼
+[LangGraph Conditional StateGraph (backend/app/ai/complaint_graph.py)]
+  │
+  ├─► Node 1: extract_edit_changes
+  │     - Prompts ChatGroq with EDIT_EXTRACTION_SYSTEM_PROMPT
+  │     - Extracts ONLY explicitly requested changes into ComplaintChanges schema
+  │     - Identifies ambiguity or non-edit queries (sets needs_clarification = True)
+  │
+  ├─► Node 2: validate_normalize_changes
+  │     - Enforces backend EDITABLE_COMPLAINT_FIELDS allowlist (discards illegal/unexpected keys)
+  │     - Normalizes types (casts non-negative integer quantity, trims whitespace)
+  │     - Determines if workflow should proceed (valid changes present and not ambiguous)
+  │
+  ├─► Conditional Routing (route_after_edit_validation):
+  │     │
+  │     ├─► If Ambiguous / Invalid / No Changes:
+  │     │     - Bypasses merge_changes and reassess_risk entirely
+  │     │     - Routes directly to build_edit_proposal
+  │     │     - Returns safe clarification message and guidance
+  │     │
+  │     └─► If Valid Edit Request:
+  │           │
+  │           ▼
+  │   Node 3: merge_changes
+  │     - Creates merged complaint snapshot (authoritative baseline + validated changes)
+  │     - Guarantees 100% preservation of all unmentioned fields
+  │           │
+  │           ▼
+  │   Node 4: reassess_risk
+  │     - Passes merged facts to ChatGroq (AIRiskAssessment schema)
+  │     - Dynamically recalculates preliminary severity, priority, reasoning, and QA next steps
+  │           │
+  │           ▼
+  │   Node 5: build_edit_proposal
+  │     - Generates structured diff table: [Field, Current Value, Proposed Value, Changed Status]
+  │     - Assembles AIComplaintEditProposal payload
+  │     - Zero database writes (100% read-only)
+                             │
+                             ▼
+[HTTP 200 Response: AIComplaintEditProposal]
+                             │
+                             ▼
+[React Frontend: Redux aiSlice receives editProposal]
+  - Renders Proposed Change Set Diff Table & Recalculated Risk Card
+  - Highlights exact fields modified (e.g. Quantity Affected: 25 -> 50)
+  - Displays Preservation Guarantee banner
+                             │
+                             ▼ (User clicks "Apply Changes to Form")
+[Redux complaintSlice updated via applyComplaintChanges action]
+  - Updates only the modified fields in the active form
+  - Unmodified fields remain completely intact
+  - Left form remains 100% interactive and editable for QA review
+                             │
+                             ▼ (User clicks "Save Complaint" / PATCH)
+[Authoritative Persistence to PostgreSQL via FastAPI CRUD]
+```
+
+### The Three Data Layers: Separation of Concerns
+
+To prevent data loss, race conditions, and uncontrolled mutations, Unit 6 establishes strict demarcation across three distinct data layers:
+
+| Layer | Technology | Role & Authority | Mutation Boundary |
+| :--- | :--- | :--- | :--- |
+| **1. Database Layer** | PostgreSQL (Supabase via SQLAlchemy) | **Authoritative System of Record** for all persisted complaints. When `complaint_id` is supplied, this layer supersedes any client state. | Modified **only** when user explicitly triggers `POST /api/complaints` or `PATCH /api/complaints/{id}`. The AI edit endpoint **never** writes to this layer. |
+| **2. Client Application Layer** | Redux Toolkit (`complaintSlice`) | **Active Working State** for the form currently being viewed or edited in the user's browser. | Updated by user typing, resetting, or by clicking "Apply Changes to Form". Ceases to exist if browser tab is closed without saving. |
+| **3. AI Proposal Layer** | Redux Toolkit (`aiSlice`) & LangGraph | **Advisory Change Proposal (Diff)** generated from conversational user requests. | Ephemeral. Contains proposed delta, field-by-field diff, and recalculated risk. Cannot alter form state or database state until explicitly approved by human user. |
+
+### Critical Architectural Safeguards
+
+1. **Explicit Backend Allowlist (`EDITABLE_COMPLAINT_FIELDS`):**
+   Relying solely on LLM prompt instructions to restrict modifications is unsafe. The backend validation layer explicitly inspects the extracted dictionary against an immutable allowlist:
+   `{'complaint_source', 'customer_name', 'product_name', 'product_strength', 'batch_lot_number', 'quantity_affected', 'manufacturing_date', 'expiry_date', 'complaint_type', 'complaint_date', 'detailed_description', 'initial_severity', 'priority'}`.
+   Any extraneous, internal, or primary key fields (such as `id` or `created_at`) are automatically pruned.
+2. **Authoritative Persisted Record Authority:**
+   When editing an already-saved complaint (`complaint_id` present), the backend queries PostgreSQL directly. This ensures stale frontend data (e.g. from an out-of-date browser tab) cannot corrupt the authoritative complaint baseline. For unsaved drafts, the in-memory form payload provides the necessary context.
+3. **Conditional Workflow Early Exit:**
+   Ambiguous or non-edit inputs (e.g., *"What is the weather today?"* or *"Change the quantity"* without specifying a number) do not proceed to merge or risk recalculation. The conditional graph safely halts at validation and returns a clear explanation of what information is missing.
