@@ -15,7 +15,7 @@ CRITICAL EXTRACTION RULES:
 2. STRICT ANTI-HALLUCINATION: NEVER invent, fabricate, or assume missing values. 
 3. NULL VALUE POLICY: If a field is not explicitly mentioned or clearly stated in the complaint, set it to null.
 4. SPECIFIC FIELDS:
-   - complaint_source: Identify channel if mentioned (e.g., 'Email', 'Phone Call', 'Customer Portal', 'Sales Rep', 'Healthcare Provider'). Otherwise null.
+   - complaint_source: Identify channel ONLY if explicitly stated (e.g., 'Email', 'Phone Call', 'Customer Portal', 'Sales Rep', 'Healthcare Provider'). Non-email documents (such as PDFs, DOCX, or text notes) must NEVER default to 'Email' unless the text explicitly states the report arrived via email. If an EML file is analyzed, set complaint_source to 'Email'. Otherwise null.
    - customer_name: Organization, hospital, clinic, pharmacy, doctor, or patient reporting the issue. Otherwise null.
    - product_name: Commercial or generic drug name (e.g., 'Paracetamol', 'Ibuprofen'). Otherwise null.
    - product_strength_grade: Dosage strength/concentration (e.g., '500 mg', '20 mg/2 mL vial'). Otherwise null.
@@ -24,7 +24,8 @@ CRITICAL EXTRACTION RULES:
    - expiry_date: Expiry date in YYYY-MM-DD format if explicitly specified. Otherwise null.
    - quantity_affected: Exact integer number of affected units (tablets, vials, bottles, packs). If qualitative or unknown, set to null.
    - complaint_type: Defect category (e.g., 'Packaging Defect', 'Discoloration/Physical Appearance', 'Labeling/Packaging Error', 'Contamination/Foreign Matter', 'Adverse Event', 'Efficacy Failure'). Otherwise null.
-   - complaint_date: Observation or reporting date in YYYY-MM-DD format if stated. Otherwise null.
+   - complaint_date: Observation or reporting date in YYYY-MM-DD format if stated in the narrative.
+     CRITICAL: Email transmission header timestamps (e.g. 'Email Message Sent Timestamp: ...') represent network metadata, NOT necessarily the pharmaceutical complaint observation or receipt date. Populate complaint_date ONLY when the document content explicitly supports that it is the complaint/received date. Otherwise complaint_date MUST remain null.
    - detailed_description: A clear, objective factual narrative summarizing the complaint, preserving specific observations.
 """
 

@@ -470,3 +470,241 @@ Enforce conditional routing to safely halt early on ambiguous queries, maintain 
 
 ### 5. Next Steps (Pending User Approval)
 - Stop and await user review for Unit 6.
+
+---
+
+## [2026-09-16] - Unit 7: Document Extraction Tool & Deterministic Ingestion Pipeline
+
+### 1. Objective
+Implement the mandatory **Document Extraction Tool** from the assignment, enabling QA specialists to upload complaint documents in **PDF, DOCX, TXT, or EML** formats (up to **10 MB**).
+Extract raw text streams in memory using deterministic Python libraries (without external OCR dependencies), orchestrate structured entity extraction and preliminary QA risk triage through a dedicated **LangGraph** workflow with **Groq LPU** inference, and present structured complaint proposals to the React frontend for human review.
+Incorporate four user adjustments:
+1. Deterministic file validation before Groq configuration check.
+2. EML transmission header date treated as metadata (not automatically mapped to `complaint_date`).
+3. PDF readability determined by whitespace/empty checks rather than arbitrary character cutoffs; legitimate short complaints pass through.
+4. Non-destructive form merging on Apply (extracted null/missing fields never overwrite existing form values).
+Guarantee absolute database write isolation (0 writes during extraction).
+
+### 2. What Was Implemented
+- **Dependencies (`backend/requirements.txt`):**
+  - Added and pinned: `pypdf>=5.0.0`, `python-docx>=1.1.0`, `python-multipart>=0.0.18`.
+- **In-Memory Deterministic Document Parser (`backend/app/ai/document_extractor.py`):**
+  - Implemented `extract_text_from_document(filename: str, file_bytes: bytes) -> tuple[str, str, int]`:
+    - Enforces allowed extensions: `{".pdf", ".docx", ".txt", ".eml"}`.
+    - Rejects files exceeding 10 MB limit (`MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024`).
+    - Uses `io.BytesIO` streams in memory (zero temporary disk files).
+    - **PDF:** Uses `pypdf.PdfReader` to extract text page-by-page. If extracted text is completely empty or whitespace-only, raises `ValueError` with clear guidance: *"Could not extract readable text from this PDF. The file may be scanned/image-only."* Allows concise short complaints.
+    - **DOCX:** Uses `docx.Document` to extract paragraph text and table cell text.
+    - **TXT:** Decodes text using UTF-8 with Latin-1 fallback.
+    - **EML:** Uses standard library `email.parser.BytesParser` to extract email body. Identifies the RFC 822 `Date` header as `[Email Transmission Date (Header Metadata): ...]`, preventing automatic mapping to observation date.
+- **Pydantic Schemas (`backend/app/schemas/ai.py` & `backend/app/schemas/__init__.py`):**
+  - `DocumentMetadata`: Captures `filename`, `format`, `size_bytes`, `extracted_characters`, and optional `warning`.
+  - `AIDocumentExtractionResponse`: Comprehensive response payload containing `metadata`, `complaint` (`AIComplaintExtraction`), and `risk_assessment` (`AIRiskAssessment`).
+- **Prompt Engineering (`backend/app/ai/prompts.py`):**
+  - Updated `EXTRACTION_SYSTEM_PROMPT` to enforce that EML header `Date` is transmission metadata and must not be mapped to `complaint_date` unless explicitly supported in narrative text. Also explicitly instructed to set `complaint_source` to `"Email"` when reading from an email document.
+- **LangGraph Workflow (`backend/app/ai/complaint_graph.py`):**
+  - Implemented and compiled `document_extraction_graph` with 5 sequential nodes:
+    1. `extract_document_text`: Ingests and validates extracted text stream.
+    2. `extract_complaint_fields`: Invokes ChatGroq with `EXTRACTION_SYSTEM_PROMPT` and `AIComplaintExtraction` structured schema.
+    3. `validate_normalize`: Normalizes field strings, trims whitespace, converts empty strings to None, and enforces non-negative integer quantity.
+    4. `risk_assessment`: Invokes ChatGroq with `RISK_ASSESSMENT_PROMPT` to calculate preliminary severity, priority, reasoning, and QA next actions.
+    5. `build_result`: Compiles `AIDocumentExtractionResponse` payload.
+- **FastAPI AI Endpoint (`backend/app/api/routes/ai.py`):**
+  - Mounted `POST /api/ai/document-extraction` accepting `file: UploadFile = File(...)`.
+  - **Stage 1:** Deterministic validation: checks file extension (HTTP 400), checks 10 MB size limit (HTTP 413), checks 0-byte file (HTTP 422).
+  - **Stage 2:** Deterministic in-memory text parsing: catches scanned PDF / empty text (HTTP 422).
+  - **Stage 3:** Checks Groq configuration (HTTP 503 if unconfigured).
+  - **Stage 4:** Executes `document_extraction_graph`. Zero database queries or writes.
+  - Used modern non-deprecated HTTP status codes (`HTTP_413_CONTENT_TOO_LARGE` and `HTTP_422_UNPROCESSABLE_CONTENT`).
+- **Automated Test Suite (`backend/test_document_extraction_verification.py`):**
+  - Created and executed a 12-test automated suite:
+    - Test 1: Realistic TXT complaint extraction.
+    - Test 2: Standard PDF text extraction.
+    - Test 3: DOCX document with paragraphs and tables.
+    - Test 4: EML email document extraction.
+    - Test 5: EML Date header metadata isolation (`complaint_date` remains null when observation date unstated).
+    - Test 6: Short legitimate PDF complaint accepted (no arbitrary <5 char rule).
+    - Test 7: Scanned / image-only PDF cleanly caught with HTTP 422 error alert.
+    - Test 8: Empty (0-byte) file rejected with HTTP 422.
+    - Test 9: Unsupported file extension (.jpg, .xlsx) rejected with HTTP 400.
+    - Test 10: Oversized file (>10 MB) rejected with HTTP 413.
+    - Test 11: Incomplete complaint preserves nulls without hallucinating.
+    - Test 12: Database Write Isolation verified (row count remained exactly 2, delta = 0).
+  - Result: 12/12 tests passed with exit code 0.
+- **Frontend API & Redux State (`frontend/src/store/` & `frontend/src/services/api.ts`):**
+  - `frontend/src/services/api.ts`: Added `runDocumentExtraction(file: File): Promise<AIDocumentExtractionResponse>`.
+  - `frontend/src/store/slices/aiSlice.ts`: Added `documentStatus`, `documentProcessingStep`, `documentError`, `documentResult`, `selectedFileName`, `selectedFileSize`, and reducers.
+  - `frontend/src/store/slices/complaintSlice.ts`: Updated `populateComplaintFields` reducer to enforce Adjustment 4 (non-destructive merging: null or empty extracted fields never overwrite existing non-empty values in the form).
+- **Frontend AIAssistant UI (`frontend/src/components/ai/AIAssistant.tsx` & `index.css`):**
+  - Implemented 3-tab layout: `⚡ Text Intake` | `📄 Document Upload` | `✏️ Edit / Correct`.
+  - Built interactive Drag & Drop dropzone with format badges (.PDF, .DOCX, .TXT, .EML, Max 10 MB).
+  - Added 3 quick sample document buttons (Paracetamol .txt, Metformin .eml, Scanned PDF error simulation).
+  - Built Selected File Pill with file name, size, and remove button.
+  - Built multi-step pipeline progress indicator (Uploading -> Extracting Text -> Analyzing -> Assessing Risk).
+  - Built Document Metadata Banner showing file name, format, size, and character count.
+  - Built Extracted Fields Cards with "Human Review Required" status pill.
+  - Built Preliminary Risk Assessment card with severity, priority, reasoning, and QA next actions.
+  - Built "📋 Apply to Complaint Form" button with visual feedback and non-destructive merge.
+  - Production build: `tsc -b && vite build` compiled cleanly in 242ms with 0 errors.
+- **Browser Automation Verification (Playwright MCP):**
+  - Tested live end-to-end flow on `http://localhost:5173/`.
+  - Verified 3-tab layout; switched to `📄 Document Upload`.
+  - Pre-populated form fields (`complaint_source: Phone Call`, `manufacturing_date: 2026-01-15`, `batch_lot_number: BATCH-ORIGINAL-777`, `quantity_affected: 10`).
+  - Extracted sample document (`paracetamol_report.txt`).
+  - Verified extraction results and preliminary risk assessment (Medium/Medium).
+  - Clicked "Apply to Complaint Form":
+    - Verified `quantity_affected` updated to 25 and `product_name` updated to Paracetamol.
+    - Verified `complaint_source` stayed "Phone Call" (preserved!).
+    - Verified `manufacturing_date` stayed "2026-01-15" (preserved!).
+  - Verified Scanned PDF error simulation: returned clean HTTP 422 with controlled alert banner.
+  - Switched to `✏️ Edit / Correct` tab: verified Active Context seamlessly inherited the applied complaint.
+  - Verified PostgreSQL row count remained exactly 2 (zero database writes).
+  - Captured visual screenshot artifacts:
+    - `unit7_document_extracted_results.png`
+    - `unit7_applied_to_form.png`
+    - `unit7_document_error_handling.png`
+
+### 3. What Was Intentionally NOT Implemented
+- **No Unit 8 / Future Features:** No production OCR (Tesseract / cloud vision), no CAPA, no duplicate detection, no RAG, no auth, no Docker.
+- **No Automatic Database Mutations by AI:** AI extraction remains strictly advisory; human QA review required before persistence.
+
+### 4. Verification & Testing Performed
+- **Automated Backend Suite:** `backend/test_document_extraction_verification.py` passed 12/12 tests.
+- **Regression Suites:**
+  - `backend/test_crud_verification.py` passed 9/9 steps.
+  - `backend/test_ai_verification.py` passed 7/7 tests.
+  - `backend/test_ai_edit_verification.py` passed 7/7 tests.
+- **Frontend TypeScript & Build:** `tsc -b && vite build` passed cleanly with 0 errors.
+- **Browser Automation:** Playwright MCP completed full positive, negative, and non-destructive apply testing.
+- **Database Safety:** PostgreSQL row count verified unchanged at 2 (delta = 0).
+
+### 5. Next Steps (Pending User Approval)
+- Unit 8: Final Product Readiness Audit and Polish.
+
+---
+
+## [2026-09-16] - Unit 8: Final Product Readiness Audit and Polish
+
+### 1. Objective
+Execute a rigorous 11-phase product-readiness audit across the entire AIVOA Customer Complaint Management System:
+- Inspect all mandatory features (Manual Complaint Form, AI Text Complaint Intake, AI Complaint Edit, AI Document Extraction).
+- Validate architecture, data layers, secret containment, error handling, and database write isolation.
+- Preserve the 2 historical test records in Supabase PostgreSQL without deletion.
+- Execute full regression testing across all 4 automated backend test suites and frontend build/lint pipelines.
+- Conduct 3 complete end-to-end user workflows (Flow A: Text Intake, Flow B: Document Extraction, Flow C: Conversational AI Edit & In-Place PATCH) using Playwright MCP.
+- Polish concrete UX/architecture gaps without rewriting working foundations or adding speculative features.
+
+### 2. What Was Audited & Polished
+- **Requirements Matrix (Phase 1):** Verified all 13 fields across Manual Form, AI Text Intake, AI Edit, and Document Extraction against the actual codebase. All requirements evaluated as **PASS**.
+- **Architecture Audit (Phase 2):** Confirmed strict 3-tier boundary: Database Layer (PostgreSQL via SQLAlchemy) $\rightarrow$ Client Application Layer (Redux `complaintSlice`) $\rightarrow$ AI Proposal Layer (Redux `aiSlice` & LangGraph). Verified backend-only Groq execution.
+- **AI Safety & Factuality Audit (Phase 3):** Verified `backend/app/ai/prompts.py` anti-hallucination rules, strict null preservation for unmentioned fields, EML header date metadata separation, and preliminary/advisory risk phrasing.
+- **UI/UX Polish (Phase 4):**
+  - Updated outdated header badge in `frontend/src/App.tsx` from `"Unit 5 • Groq + LangGraph AI"` to `"AI-Assisted QMS • Groq + LangGraph"`.
+  - Implemented dynamic form submission switching in `frontend/src/components/complaint/ComplaintForm.tsx` and `frontend/src/services/api.ts`:
+    - Added `updateComplaint(id, payload)` issuing `PATCH /api/complaints/{id}`.
+    - Submit button dynamically displays `"Update Complaint (PATCH)"` when editing a saved complaint (`savedComplaintId` present) and updates record in place rather than creating accidental duplicates.
+- **API & Error Handling Audit (Phase 5):**
+  - Modernized Starlette status codes in `backend/app/api/routes/ai.py` from `status.HTTP_422_UNPROCESSABLE_ENTITY` to `status.HTTP_422_UNPROCESSABLE_CONTENT`.
+- **Security Audit (Phase 6):** Confirmed `GROQ_API_KEY` is strictly server-side; zero mentions or leaks in `frontend/src/` or `dist/` bundles; `.env` git-ignored; in-memory document parsing via `io.BytesIO`.
+- **Database Audit (Phase 7):**
+  - Supabase PostgreSQL schema and UUID primary key generation verified.
+  - Zero database writes verified across all AI endpoints (Delta = 0).
+  - Preserved the two historical test records (`0c0ad145-37c5-496e-90fd-bcac619494a6` and `a1aea44b-bfe2-4085-b06a-b348f65d5a77`).
+- **Regression Testing (Phase 8):**
+  - `backend/test_crud_verification.py`: 9/9 passed.
+  - `backend/test_ai_verification.py`: 7/7 passed.
+  - `backend/test_ai_edit_verification.py`: 7/7 passed.
+  - `backend/test_document_extraction_verification.py`: 12/12 passed.
+  - Total automated test cases: 35/35 passed (100%).
+  - `npm run build`: Compiled cleanly in 178ms with 0 errors.
+  - `npm run lint`: Oxlint passed with 0 errors and 0 warnings.
+- **Complete End-to-End Demo Flows (Phase 9):**
+  - **FLOW A (Text AI Intake):** Ceftriaxone narrative $\rightarrow$ Groq structured extraction $\rightarrow$ form population $\rightarrow$ manual edit (`complaint_source: Healthcare Professional`) $\rightarrow$ Save Complaint $\rightarrow$ Created UUID: `58492821-383b-4d9a-ac5e-abb571637e0f`. Direct SQL verified.
+  - **FLOW B (Document Extraction):** Uploaded `hospital_complaint.eml` $\rightarrow$ parsed Metformin 850 mg facts $\rightarrow$ isolated EML header date $\rightarrow$ applied to form $\rightarrow$ AI Edit corrected quantity from 30 to 45 $\rightarrow$ applied correction $\rightarrow$ Save Complaint $\rightarrow$ Created UUID: `851896e4-68d8-43a5-9d56-513ea0e950b0`. Direct SQL verified.
+  - **FLOW C (Conversational AI Edit & PATCH):** Loaded active context (`851896e4-68d8-43a5-9d56-513ea0e950b0`) $\rightarrow$ issued instruction: *"Actually, 50 tablets were affected."* $\rightarrow$ AI proposed `Quantity Affected: 45 ➔ 50` $\rightarrow$ verified DB still held 45 (write isolation confirmed!) $\rightarrow$ applied diff to form $\rightarrow$ clicked `"Update Complaint (PATCH)"` $\rightarrow$ direct SQL confirmed record `851896e4-68d8-43a5-9d56-513ea0e950b0` updated in place to quantity 50, updating `updated_at` without row count change.
+- **Database Row Count Evolution (Phase 10):**
+  - Initial baseline count: 2 records.
+  - Flow A saved: +1 record (total: 3).
+  - Flow B saved: +1 record (total: 4).
+  - Flow C edited & PATCHed: updated existing record in place (total remained: 4).
+
+### 3. What Was Intentionally NOT Implemented
+- Strict adherence to scope boundaries:
+  - NO commit, NO push.
+  - NO RAG, NO OCR production pipeline, NO CAPA module, NO duplicate detection, NO root cause module, NO completeness checker, NO authentication, NO analytics dashboard, NO notifications, NO deployment infrastructure.
+
+### 4. Verification & Testing Performed
+- **Automated Backend Suites:** 35/35 tests passed across all 4 test files.
+- **Frontend Quality:** TypeScript compilation, Vite production bundling, and Oxlint passed with zero errors.
+- **Browser Automation (Playwright MCP):** Executed Flows A, B, and C with full screenshot and DOM verification.
+- **Database Queries:** Verified all CRUD operations directly against Supabase PostgreSQL.
+
+### 5. Next Steps
+- Deliver the final 13-point comprehensive report to the user.
+- Await user review and instructions.
+
+---
+
+## [2026-09-16] - Submission UI Polish & Enterprise QMS Alignment
+
+### 1. Objective
+Execute a visual alignment pass on the frontend interface to match the enterprise pharmaceutical QMS visual reference without changing backend behavior, API contracts, LangGraph workflows, AI prompts, or database schemas.
+Preserve all three existing workflows (`Text Intake`, `Document Upload`, `Edit / Correct`) while polishing the default view, typography, form hierarchy, section headings, and status badging.
+
+### 2. What Was Implemented
+- **Frontend Form Alignment (`frontend/src/components/complaint/ComplaintForm.tsx`):**
+  - Updated card header to display "Log Customer Complaint" with subtitle "API & FDF Quality Assurance Module".
+  - Added "Pending Triage" amber pill badge (dynamically switching to "Registered" once saved).
+  - Renamed all fieldset legends to uppercase numbered sections:
+    - `1. ORIGIN & CUSTOMER DETAILS`
+    - `2. PRODUCT & BATCH IDENTIFICATION`
+    - `3. COMPLAINT DETAILS`
+    - `4. INITIAL ASSESSMENT & PRIORITY`
+  - Updated input placeholders to `"Awaiting AI extraction..."`.
+  - Added unit indicators (`kg / units`) on quantity field.
+  - Added clear icons to primary action buttons (`↺ Reset Form`, `💾 Save Complaint`).
+- **AI Assistant Header & Default View (`frontend/src/components/ai/AIAssistant.tsx`):**
+  - Renamed right-side header to `"AI Complaint Intake Assistant"` with a `BETA` pill badge.
+  - Enhanced the default `Text Intake` tab to incorporate the primary ingestion dropzone:
+    - Clean drag & drop document intake area (`Drag & drop complaint document here or click to browse`).
+    - Obvious visual `"OR"` separator.
+    - Paste Complaint Text / Email narrative input with quick sample chips.
+    - Green alert notice highlighting supported formats: `PDF, DOCX, TXT, EML • Max file size: 10MB`.
+    - Animated extraction progress bar during LLM inference.
+    - AI assistant intro card with robot avatar.
+    - Bottom interactive query bar: `"Ask me anything about this complaint..."`.
+  - Maintained all 3 tabs (`⚡ Text Intake`, `📄 Document Upload`, `✏️ Edit / Correct`) via clean accessible navigation.
+- **Enterprise Pharmaceutical Design System (`frontend/src/index.css`):**
+  - Standardized globally on Google `Inter` font.
+  - Established crisp enterprise light theme matching reference screenshot (`#f8fafc` background, `#ffffff` containers, `#2563eb` primary buttons, `#e2e8f0` borders).
+  - Responsive two-column grid on desktop screens ($\ge 1024\text{px}$) with smooth wrapping for smaller viewports.
+
+### 3. What Was Intentionally NOT Implemented
+- Zero change to backend Python code, FastAPI endpoints, or database models.
+- Zero change to LangGraph StateGraph nodes or Groq prompts.
+- Zero removal of existing features or workflows.
+- No auto-populated fake data on initial page load.
+
+### 4. Verification & Testing Performed
+- **Automated Backend Suites:**
+  - `backend/test_crud_verification.py`: Passed (9/9 steps, exit code 0).
+  - `backend/test_ai_verification.py`: Passed (7/7 tests, exit code 0).
+  - `backend/test_ai_edit_verification.py`: Passed (7/7 tests, exit code 0).
+  - `backend/test_document_extraction_verification.py`: Passed (12/12 tests, exit code 0).
+- **Frontend Code Quality:**
+  - `npm run lint` (Oxlint): Passed with 0 errors and 0 warnings.
+  - `npm run build` (Vite production build): Built in 173ms with 0 errors.
+- **Playwright MCP Browser Verification:**
+  - Navigated to `http://127.0.0.1:5173/` at 1440x900 resolution.
+  - Verified clean landing state visually matching `input_file_0.png` with "Pending Triage" and "BETA" badges.
+  - Verified Text Intake workflow: populated Paracetamol sample, ran live Groq extraction, verified progress bar and risk triage results.
+  - Verified "Apply to Complaint Form": populated left form fields non-destructively.
+  - Verified "Save Complaint": successfully created record in PostgreSQL (`2c224f66-d642-4647-94f1-80c4c2fbd033`), switching submit button to `"Update Complaint (PATCH)"`.
+  - Verified zero-write isolation: AI extraction itself produced 0 database writes. Cleaned up test record to restore baseline count to 4.
+  - Verified Document Upload and Edit / Correct tabs rendered cleanly and functioned properly.
+  - Captured verification screenshots in artifacts directory.
+
+### 5. Next Steps
+- Await user confirmation before committing or pushing.
+
+

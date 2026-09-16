@@ -9,6 +9,8 @@ from .ai import (
     AIComplaintEditRequest,
     AIComplaintEditProposal,
     EDITABLE_COMPLAINT_FIELDS,
+    DocumentMetadata,
+    AIDocumentExtractionResponse,
 )
 
 __all__ = [
@@ -24,5 +26,7 @@ __all__ = [
     "AIComplaintEditRequest",
     "AIComplaintEditProposal",
     "EDITABLE_COMPLAINT_FIELDS",
+    "DocumentMetadata",
+    "AIDocumentExtractionResponse",
 ]
 

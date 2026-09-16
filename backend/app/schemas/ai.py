@@ -232,3 +232,24 @@ class AIComplaintEditProposal(BaseModel):
     )
     risk_assessment: Optional[AIRiskAssessment] = None
 
+
+# =====================================================================
+# UNIT 7: DOCUMENT EXTRACTION SCHEMAS
+# =====================================================================
+
+class DocumentMetadata(BaseModel):
+    """Metadata regarding the extracted document file."""
+    filename: str = Field(..., description="Original name of the uploaded document file.")
+    file_type: str = Field(..., description="Document file extension (e.g., '.pdf', '.docx', '.txt', '.eml').")
+    file_size_bytes: int = Field(..., description="Size of the uploaded file in bytes.")
+    char_count: int = Field(..., description="Number of text characters extracted from the document.")
+
+
+class AIDocumentExtractionResponse(BaseModel):
+    """
+    Structured response payload returned by the document extraction pipeline.
+    Reuses existing AIComplaintExtraction and AIRiskAssessment models.
+    """
+    complaint: AIComplaintExtraction
+    risk_assessment: AIRiskAssessment
+    document_metadata: DocumentMetadata

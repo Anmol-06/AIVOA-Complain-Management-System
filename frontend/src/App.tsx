@@ -22,7 +22,7 @@ export const App: React.FC = () => {
               <span className="pulse-dot"></span>
               FastAPI + Supabase Connected
             </span>
-            <span className="status-pill status-unit">Unit 5 • Groq + LangGraph AI</span>
+            <span className="status-pill status-unit">AI-Assisted QMS • Groq + LangGraph</span>
           </div>
         </div>
       </header>

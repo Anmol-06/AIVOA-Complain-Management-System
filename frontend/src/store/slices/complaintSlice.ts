@@ -85,8 +85,13 @@ export const complaintSlice = createSlice({
       state: ComplaintState,
       action: PayloadAction<Partial<ComplaintFormData>>
     ) => {
+      // Adjustment 4: Extracted null/missing/empty fields MUST NOT overwrite existing Redux form values.
+      // Only extracted fields containing an actual value should update the corresponding Redux field.
       for (const [key, value] of Object.entries(action.payload)) {
         if (value !== undefined && value !== null) {
+          if (typeof value === "string" && value.trim() === "") {
+            continue;
+          }
           const k = key as keyof ComplaintFormData;
           if (k in state.formData) {
             (state.formData as any)[k] = value;

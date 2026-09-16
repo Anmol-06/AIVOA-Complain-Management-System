@@ -237,3 +237,71 @@ In Unit 6, the conversational Edit Complaint tool was introduced. This feature i
   }
   ```
 - Any attempts (whether malicious or accidental LLM hallucination) to output non-whitelisted keys are automatically rejected before merging, protecting database integrity.
+
+---
+
+## Unit 7 Update: Document Extraction Tool & Absolute Database Write Isolation
+
+In Unit 7, document-based complaint intake (PDF, DOCX, TXT, EML) was integrated. This feature strictly upholds the database isolation invariants established in previous units:
+
+### 1. Zero Database Mutations During Extraction (Delta = 0)
+- The endpoint `POST /api/ai/document-extraction` receives raw document files via `multipart/form-data`.
+- It executes in-memory text parsing, deterministic validation, LangGraph workflow execution, and Groq inference.
+- **Database Isolation:** Zero database queries (`INSERT`, `UPDATE`, `DELETE`) are performed during document extraction.
+- **Automated Verification:** Verified in `backend/test_document_extraction_verification.py` (Test 12) where the `complaints` table row count was measured before and after document extraction:
+  - Baseline row count: 2
+  - Post-extraction row count: 2
+  - Net database mutations: 0
+- **Browser Verification:** In live Playwright browser verification, uploading and extracting documents produced zero changes in PostgreSQL table counts.
+
+### 2. Form Population vs. Database Persistence (The Human QA Boundary)
+- Clicking **"Apply to Complaint Form"** in the UI dispatches the `populateComplaintFields` Redux action.
+- This updates only client-side browser memory (`complaintSlice`).
+- **Adjustment 4 Non-Destructive Invariant:** If the uploaded document omits fields (e.g. manufacturing date or expiry date), the extracted value is `null`. The Redux reducer ensures that `null` or missing fields **never** overwrite existing user-entered values in the form.
+- The complaint data enters PostgreSQL **only** when the QA specialist reviews the populated form and explicitly clicks **"Save Complaint"**, triggering the standard `POST /api/complaints` CRUD pipeline.
+
+---
+
+## Unit 8 Update: Final Product Readiness Database Audit & Row Count Verification
+
+In Unit 8, a complete database audit was conducted against the live PostgreSQL instance hosted on Supabase:
+
+### 1. Schema & Column Invariant Audit
+- Primary Key: `id` (UUIDv4 generated server-side) verified with standard uniqueness and indexing.
+- Timestamps: `created_at` and `updated_at` timestamps verified with timezone preservation (`TIMESTAMP WITH TIME ZONE`).
+- Nullable Constraints: All 8 optional fields properly accept and persist `NULL` values when omitted by AI extraction or user intake.
+- Type Safety: Integer enforcement on `quantity_affected` and ISO-8601 date parsing on date columns verified.
+
+### 2. Historical Data Integrity & Test Record Preservation
+As mandated by project requirements, the two historical development test records created during Unit 4 manual form testing were strictly preserved and NOT deleted:
+1. `0c0ad145-37c5-496e-90fd-bcac619494a6` (Product: `efgh`, Qty: `5`, Source: `Phone Call`)
+2. `a1aea44b-bfe2-4085-b06a-b348f65d5a77` (Product: `efgh`, Qty: `5`, Source: `Web Portal`)
+
+### 3. Demo Flow Database Evolution
+Across the end-to-end demo flows executed during Unit 8, database state changes were monitored and verified via direct SQL queries:
+- **Initial Baseline Count:** 2 rows.
+- **After Flow A (Text Intake & Manual Edit):** 1 row inserted (`58492821-383b-4d9a-ac5e-abb571637e0f`, Ceftriaxone, Qty 15). Total count = 3 rows.
+- **During Flow B (Document Extraction):** 0 rows inserted during parsing, AI extraction, and form population.
+- **After Flow B (Initial Save):** 1 row inserted (`851896e4-68d8-43a5-9d56-513ea0e950b0`, Metformin, Qty 45). Total count = 4 rows.
+- **During Flow C (AI Edit):** AI proposed changing quantity from 45 to 50. Verified database still held 45 (0 direct DB writes).
+- **After Flow C (PATCH Submission):** Frontend submitted `PATCH /api/complaints/851896e4-68d8-43a5-9d56-513ea0e950b0`. Record quantity updated from 45 to 50 in place, advancing `updated_at` from `12:10:51 UTC` to `12:12:36 UTC`. Total count remained exactly 4 rows.
+
+This confirms complete CRUD integrity, proper HTTP PATCH semantics, and zero unintended database mutations.
+
+---
+
+## Submission Polish Update: Database Invariant & Zero-Write Isolation Verification
+
+During the final submission UI polish phase, database interactions were verified across both automated suites and live Playwright browser sessions:
+
+1. **Zero Database Writes During AI Operations:**
+   - Text intake extraction (`POST /api/ai/complaint-intake`), document extraction (`POST /api/ai/document-extraction`), and conversational edits (`POST /api/ai/complaint-edit`) all operate in-memory with zero direct database queries.
+   - Verified across all unit test suites (`test_ai_verification.py`, `test_ai_edit_verification.py`, `test_document_extraction_verification.py`) where row delta remained strictly 0:
+     $$\Delta \text{DB Rows}_{\text{AI Analysis}} = 0$$
+2. **Explicit Persistence Boundary:**
+   - In the live Playwright browser session, extracting Paracetamol details produced zero database changes until the user clicked "Save Complaint" (`#save-complaint-btn`), which issued `POST /api/complaints` and persisted a new UUID record (`2c224f66-d642-4647-94f1-80c4c2fbd033`).
+   - The test record was subsequently purged cleanly via SQLAlchemy session cleanup, restoring the table row count to the established baseline of exactly 4 rows.
+3. **Database Schema Unchanged:**
+   - No schema migrations, table alterations, or column modifications were made during this UI polish pass.
+
+

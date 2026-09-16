@@ -446,3 +446,142 @@ To prevent data loss, race conditions, and uncontrolled mutations, Unit 6 establ
    When editing an already-saved complaint (`complaint_id` present), the backend queries PostgreSQL directly. This ensures stale frontend data (e.g. from an out-of-date browser tab) cannot corrupt the authoritative complaint baseline. For unsaved drafts, the in-memory form payload provides the necessary context.
 3. **Conditional Workflow Early Exit:**
    Ambiguous or non-edit inputs (e.g., *"What is the weather today?"* or *"Change the quantity"* without specifying a number) do not proceed to merge or risk recalculation. The conditional graph safely halts at validation and returns a clear explanation of what information is missing.
+
+## Unit 7 Update: Document Extraction Tool & File Ingestion Architecture
+
+In Unit 7, the **Document Extraction Tool** was introduced. It allows QA specialists to upload complaint documents in **PDF, DOCX, TXT, or EML** formats (up to **10 MB**), extract raw text streams in memory using deterministic Python libraries, process the extracted text through a dedicated **LangGraph** workflow with **Groq LPU** inference, and present structured complaint proposals and preliminary risk assessments to the React frontend for human review.
+
+```
+[User drops or selects file in React AIAssistant (Document Upload Tab)]
+                             │
+                             ▼
+[POST /api/ai/document-extraction (multipart/form-data: file=...)]
+                             │
+                             ▼
+[FastAPI Routing Layer (backend/app/api/routes/ai.py)]
+  │
+  ├─► Stage 1: Deterministic File Validation (Zero Groq Dependency)
+  │     - Enforces allowed extensions: .pdf, .docx, .txt, .eml (HTTP 400 if invalid)
+  │     - Enforces 10 MB payload ceiling (HTTP 413 if oversized)
+  │     - Rejects 0-byte files (HTTP 422)
+  │
+  ├─► Stage 2: In-Memory Deterministic Text Parsing (backend/app/ai/document_extractor.py)
+  │     - In-memory parsing via BytesIO (zero temporary disk files created)
+  │     - PDF: pypdf.PdfReader extracts page text; flags scanned/empty PDFs (HTTP 422)
+  │     - DOCX: python-docx extracts paragraph text and structured table cell text
+  │     - TXT: UTF-8 decoder with Latin-1 fallback
+  │     - EML: email.parser.BytesParser extracts body text and isolates header Date as metadata
+  │
+  ├─► Stage 3: LLM Readiness Check
+  │     - Only checks GROQ_API_KEY after deterministic extraction succeeds
+  │     - Returns HTTP 503 if LLM is unconfigured
+  │
+  └─► Stage 4: LangGraph Workflow (backend/app/ai/complaint_graph.py: document_extraction_graph)
+        │
+        ├─► Node 1: extract_document_text
+        │     - Validates and wraps extracted text in LangGraph state
+        │
+        ├─► Node 2: extract_complaint_fields
+        │     - Prompts ChatGroq with EXTRACTION_SYSTEM_PROMPT
+        │     - Enforces Anti-Hallucination & EML Date metadata rules
+        │     - Populates AIComplaintExtraction schema
+        │
+        ├─► Node 3: validate_normalize
+        │     - Sanitizes strings, strips whitespace, converts empty strings to None
+        │     - Enforces non-negative integer for quantity_affected
+        │
+        ├─► Node 4: risk_assessment
+        │     - Passes extracted facts to ChatGroq (AIRiskAssessment schema)
+        │     - Proposes preliminary severity, priority, reasoning, and QA next actions
+        │
+        └─► Node 5: build_result
+              - Compiles AIDocumentExtractionResponse (file metadata + complaint + risk)
+              - Database safety: ZERO writes to PostgreSQL (delta = 0)
+                             │
+                             ▼
+[HTTP 200 Response: AIDocumentExtractionResponse]
+                             │
+                             ▼
+[React Frontend: Redux aiSlice receives documentResult]
+  - Renders Document Metadata Banner (file name, format, size, extracted char count)
+  - Displays Extracted Fields Summary Cards (with "Human Review Required" pill)
+  - Displays Preliminary Risk Assessment & Actionable Next Steps
+                             │
+                             ▼ (User clicks "Apply to Complaint Form")
+[Redux complaintSlice updated via populateComplaintFields action]
+  - Non-destructive Apply: Only non-null extracted fields update the form
+  - Existing non-empty form values are strictly preserved if extracted field is null
+  - Left form remains 100% interactive and editable for QA review
+                             │
+                             ▼ (Optional conversational edits)
+[AIAssistant Edit / Correct Tab inherits extracted complaint for seamless refinement]
+                             │
+                             ▼ (User explicitly clicks "Save Complaint")
+[POST /api/complaints -> Authoritative PostgreSQL Persistence]
+```
+
+### Architectural Decisions & Technical Safeguards
+
+1. **Deterministic File Validation Before Groq Check:**
+   File validation (format support, 10MB size ceiling, empty payload checks) executes before evaluating Groq configuration. This ensures that client-side file upload errors are immediately identified and rejected with appropriate HTTP status codes (400, 413, 422) regardless of AI service availability.
+
+2. **In-Memory Streaming vs. Disk Persistence:**
+   Uploaded files are processed entirely in server memory using `io.BytesIO` streams and `UploadFile.read()`. Files are never written to temporary directories or local disk storage. This minimizes security risks, prevents disk exhaustion, and complies with pharmaceutical data containment principles.
+
+3. **Scanned PDF vs. Short Legitimate Complaints:**
+   A PDF is deemed unreadable only if its extracted text across all pages is completely empty or consists solely of whitespace, triggering a controlled HTTP 422 with a helpful message: *"Could not extract readable text from this PDF. The file may be scanned/image-only."* Arbitrary character thresholds are avoided, allowing legitimate concise complaint notices to pass through safely.
+
+4. **EML Transmission Metadata vs. Complaint Observation Date:**
+   In email complaints, the `Date` header indicates when the email was transmitted through mail servers—not necessarily when the defect occurred or was observed by the customer. The extractor explicitly separates email header date as metadata, and the LLM prompt instructs that `complaint_date` must remain `null` unless the email narrative explicitly provides the observation/received date.
+
+5. **Non-Destructive Form Merging (Redux):**
+   When the user clicks "Apply to Complaint Form", extracted fields that are `null` or empty do not overwrite existing values already present in the Redux form. Only fields with extracted values update the form, preventing accidental loss of user-entered data.
+
+---
+
+## Unit 8 Update: Final Product Readiness Audit and System Polish
+
+In Unit 8, a comprehensive product-readiness audit across the entire system was executed. The core architecture proved sound and resilient; specific polish items were integrated to ensure seamless full-lifecycle CRUD operations and deprecation-free runtime environments:
+
+### 1. Dynamic Form Mode (POST vs. PATCH Lifecycle Integration)
+Prior to Unit 8, the left complaint intake form submitted exclusively via `POST /api/complaints`. When a user loaded an existing complaint or saved a draft and subsequently issued an AI correction (Unit 6 conversational edit flow), submitting the form would inadvertently create a duplicate record in PostgreSQL.
+- **Polish Fix:** In `frontend/src/services/api.ts` and `frontend/src/components/complaint/ComplaintForm.tsx`, the submission pipeline was upgraded:
+  - If `savedComplaintId` is present in Redux (`complaintSlice.savedComplaintId`), the form dynamically switches to **Update Mode**.
+  - The submit button label updates to `"Update Complaint (PATCH)"`.
+  - The submit handler calls `updateComplaint(id, payload)` which issues `PATCH /api/complaints/{id}`.
+  - The PostgreSQL record is updated in place, advancing its `updated_at` timestamp while preserving the row count and primary key UUID.
+  - If `savedComplaintId` is null (initial submission), the form operates in **Creation Mode** via `POST /api/complaints`.
+
+### 2. HTTP Status Code Modernization
+In FastAPI route definitions (`backend/app/api/routes/ai.py`), references to deprecated `status.HTTP_422_UNPROCESSABLE_ENTITY` were updated to standard `status.HTTP_422_UNPROCESSABLE_CONTENT`. This eliminated Starlette runtime deprecation warnings in Python 3.14 without changing API contracts or client behavior.
+
+### 3. UI Status Badging & Brand Consistency
+The header status badge in `frontend/src/App.tsx` was updated from `"Unit 5 • Groq + LangGraph AI"` to `"AI-Assisted QMS • Groq + LangGraph"`, accurately reflecting the unified multi-modal intake system (Text, Document Upload, and Conversational Edit).
+
+
+---
+
+## Submission Polish Update: UI Visual Alignment & Pharmaceutical QMS Polish
+
+Following the core feature completion (Units 1–8), a final visual alignment pass was performed to match the visual layout and design language of the enterprise pharmaceutical QMS reference:
+
+### Visual Architecture & Styling Alignments
+1. **Design System & Palette:** Modern enterprise light aesthetic with slate-50 background (`#f8fafc`), clean white card containers (`#ffffff`), subtle borders (`#e2e8f0`), and accessible blue primary actions (`#2563eb`).
+2. **Typography:** Standardized globally on `Inter` with modern tabular font numerals, strict uppercase tracking on section legends, and consistent font scales.
+3. **Left Form Structure:**
+   - Header hierarchy: "Log Customer Complaint" with subtitle "API & FDF Quality Assurance Module".
+   - Amber pill badge: "Pending Triage" (dynamic to "Registered" once saved).
+   - 4 numbered uppercase section legends: `1. ORIGIN & CUSTOMER DETAILS`, `2. PRODUCT & BATCH IDENTIFICATION`, `3. COMPLAINT DETAILS`, `4. INITIAL ASSESSMENT & PRIORITY`.
+   - Explicit "Awaiting AI extraction..." placeholders and unit adornment (`kg / units`).
+4. **Right AI Assistant Panel:**
+   - Panel title: "AI Complaint Intake Assistant" with "BETA" badge.
+   - Unified intake zone: Document dropzone, visual "OR" divider, and paste complaint text/email area on the default tab.
+   - Informative format notice: Green alert card highlighting supported formats (`PDF, DOCX, TXT, EML • Max 10MB`).
+   - Animated extraction progress bar and idle AI assistant intro card.
+   - Bottom interaction prompt bar: "Ask me anything about this complaint...".
+5. **Architectural Invariants Strictly Preserved:**
+   - Zero change to backend endpoints, API contracts, LangGraph workflows, AI prompts, or DB schema.
+   - All 3 workflows (`Text Intake`, `Document Upload`, `Edit / Correct`) retained and fully accessible via tablist navigation.
+   - Absolute database write isolation invariant preserved: AI operations remain 100% ephemeral and in-memory until explicit user save.
+
+

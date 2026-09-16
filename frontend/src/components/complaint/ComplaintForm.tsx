@@ -9,7 +9,7 @@ import {
   setSavedComplaintId,
   type ComplaintFormData,
 } from "../../store/slices/complaintSlice";
-import { createComplaint } from "../../services/api";
+import { createComplaint, updateComplaint } from "../../services/api";
 
 export const ComplaintForm: React.FC = () => {
   const dispatch = useAppDispatch();
@@ -51,13 +51,22 @@ export const ComplaintForm: React.FC = () => {
     dispatch(setComplaintSuccess(null));
 
     try {
-      const response = await createComplaint(formData);
-      dispatch(setSavedComplaintId(response.id));
-      dispatch(
-        setComplaintSuccess(
-          `Complaint successfully registered with ID: ${response.id}`
-        )
-      );
+      if (savedComplaintId) {
+        const response = await updateComplaint(savedComplaintId, formData);
+        dispatch(
+          setComplaintSuccess(
+            `Complaint successfully updated in PostgreSQL (ID: ${response.id})`
+          )
+        );
+      } else {
+        const response = await createComplaint(formData);
+        dispatch(setSavedComplaintId(response.id));
+        dispatch(
+          setComplaintSuccess(
+            `Complaint successfully registered with ID: ${response.id}`
+          )
+        );
+      }
     } catch (err: any) {
       dispatch(
         setComplaintError(
@@ -72,10 +81,15 @@ export const ComplaintForm: React.FC = () => {
   return (
     <form className="complaint-form" onSubmit={handleSubmit}>
       <div className="form-header">
-        <h2>Log Customer Complaint</h2>
-        <p className="form-description">
-          Pharmaceutical Quality Management System • Intake Form
-        </p>
+        <div className="form-title-group">
+          <h2>Log Customer Complaint</h2>
+          <p className="form-subtitle">API &amp; FDF Quality Assurance Module</p>
+        </div>
+        <div className="form-header-badge">
+          <span className={`status-badge-pill ${savedComplaintId ? "badge-saved" : "badge-pending"}`}>
+            {savedComplaintId ? "Registered" : "Pending Triage"}
+          </span>
+        </div>
       </div>
 
       {error && (
@@ -103,7 +117,7 @@ export const ComplaintForm: React.FC = () => {
 
       {/* SECTION 1: Origin & Customer Details */}
       <fieldset className="form-section">
-        <legend>1. Origin & Customer Details</legend>
+        <legend>1. ORIGIN &amp; CUSTOMER DETAILS</legend>
         <div className="form-grid">
           <div className="form-group">
             <label htmlFor="complaint_source">Complaint Source</label>
@@ -113,7 +127,7 @@ export const ComplaintForm: React.FC = () => {
               value={formData.complaint_source}
               onChange={(e) => handleTextChange("complaint_source", e.target.value)}
             >
-              <option value="">-- Select Intake Channel --</option>
+              <option value="">Awaiting AI extraction...</option>
               <option value="Email">Email</option>
               <option value="Phone Call">Phone Call</option>
               <option value="Web Portal">Web Portal</option>
@@ -124,12 +138,12 @@ export const ComplaintForm: React.FC = () => {
           </div>
 
           <div className="form-group">
-            <label htmlFor="customer_name">Customer / Complainant Name</label>
+            <label htmlFor="customer_name">Customer Name</label>
             <input
               type="text"
               id="customer_name"
               name="customer_name"
-              placeholder="e.g., St. Jude Hospital, Dr. Jane Doe"
+              placeholder="Awaiting AI extraction..."
               value={formData.customer_name}
               onChange={(e) => handleTextChange("customer_name", e.target.value)}
             />
@@ -139,7 +153,7 @@ export const ComplaintForm: React.FC = () => {
 
       {/* SECTION 2: Product & Batch Identification */}
       <fieldset className="form-section">
-        <legend>2. Product & Batch Identification</legend>
+        <legend>2. PRODUCT &amp; BATCH IDENTIFICATION</legend>
         <div className="form-grid">
           <div className="form-group">
             <label htmlFor="product_name">Product Name</label>
@@ -147,46 +161,33 @@ export const ComplaintForm: React.FC = () => {
               type="text"
               id="product_name"
               name="product_name"
-              placeholder="e.g., Paracetamol, Amoxicillin"
+              placeholder="Awaiting AI extraction..."
               value={formData.product_name}
               onChange={(e) => handleTextChange("product_name", e.target.value)}
             />
           </div>
 
           <div className="form-group">
-            <label htmlFor="product_strength_grade">Product Strength / Grade</label>
+            <label htmlFor="product_strength_grade">Product Strength/Grade</label>
             <input
               type="text"
               id="product_strength_grade"
               name="product_strength_grade"
-              placeholder="e.g., 500 mg, 10 mg/2 mL"
+              placeholder="Awaiting AI extraction..."
               value={formData.product_strength_grade}
               onChange={(e) => handleTextChange("product_strength_grade", e.target.value)}
             />
           </div>
 
           <div className="form-group">
-            <label htmlFor="batch_lot_number">Batch / Lot Number</label>
+            <label htmlFor="batch_lot_number">Batch/Lot Number</label>
             <input
               type="text"
               id="batch_lot_number"
               name="batch_lot_number"
-              placeholder="e.g., BATCH-2026-001"
+              placeholder="Awaiting AI extraction..."
               value={formData.batch_lot_number}
               onChange={(e) => handleTextChange("batch_lot_number", e.target.value)}
-            />
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="quantity_affected">Quantity Affected</label>
-            <input
-              type="number"
-              id="quantity_affected"
-              name="quantity_affected"
-              min="1"
-              placeholder="e.g., 5"
-              value={formData.quantity_affected ?? ""}
-              onChange={(e) => handleNumberChange("quantity_affected", e.target.value)}
             />
           </div>
 
@@ -196,6 +197,7 @@ export const ComplaintForm: React.FC = () => {
               type="date"
               id="manufacturing_date"
               name="manufacturing_date"
+              placeholder="Awaiting AI extraction..."
               value={formData.manufacturing_date}
               onChange={(e) => handleTextChange("manufacturing_date", e.target.value)}
             />
@@ -207,16 +209,33 @@ export const ComplaintForm: React.FC = () => {
               type="date"
               id="expiry_date"
               name="expiry_date"
+              placeholder="Awaiting AI extraction..."
               value={formData.expiry_date}
               onChange={(e) => handleTextChange("expiry_date", e.target.value)}
             />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="quantity_affected">Quantity Affected</label>
+            <div className="input-with-unit">
+              <input
+                type="number"
+                id="quantity_affected"
+                name="quantity_affected"
+                min="1"
+                placeholder="Awaiting AI extraction..."
+                value={formData.quantity_affected ?? ""}
+                onChange={(e) => handleNumberChange("quantity_affected", e.target.value)}
+              />
+              <span className="unit-tag">kg / units</span>
+            </div>
           </div>
         </div>
       </fieldset>
 
       {/* SECTION 3: Complaint Details */}
       <fieldset className="form-section">
-        <legend>3. Complaint Details</legend>
+        <legend>3. COMPLAINT DETAILS</legend>
         <div className="form-grid">
           <div className="form-group">
             <label htmlFor="complaint_type">Complaint Type</label>
@@ -226,7 +245,7 @@ export const ComplaintForm: React.FC = () => {
               value={formData.complaint_type}
               onChange={(e) => handleTextChange("complaint_type", e.target.value)}
             >
-              <option value="">-- Select Complaint Classification --</option>
+              <option value="">Awaiting AI extraction...</option>
               <option value="Product damage">Product damage / Packaging Defect</option>
               <option value="Contamination">Foreign Matter / Contamination</option>
               <option value="Discoloration">Discoloration / Appearance</option>
@@ -239,11 +258,12 @@ export const ComplaintForm: React.FC = () => {
           </div>
 
           <div className="form-group">
-            <label htmlFor="complaint_date">Date Complaint Occurred / Received</label>
+            <label htmlFor="complaint_date">Complaint Date</label>
             <input
               type="date"
               id="complaint_date"
               name="complaint_date"
+              placeholder="Awaiting AI extraction..."
               value={formData.complaint_date}
               onChange={(e) => handleTextChange("complaint_date", e.target.value)}
             />
@@ -255,7 +275,7 @@ export const ComplaintForm: React.FC = () => {
               id="detailed_description"
               name="detailed_description"
               rows={4}
-              placeholder="Describe the complaint in detail: batch observations, package condition, patient impact, or reported defects..."
+              placeholder="Awaiting AI extraction..."
               value={formData.detailed_description}
               onChange={(e) => handleTextChange("detailed_description", e.target.value)}
             />
@@ -265,7 +285,7 @@ export const ComplaintForm: React.FC = () => {
 
       {/* SECTION 4: Initial Assessment & Priority */}
       <fieldset className="form-section">
-        <legend>4. Initial Assessment & QA Priority</legend>
+        <legend>4. INITIAL ASSESSMENT &amp; PRIORITY</legend>
         <div className="form-grid">
           <div className="form-group">
             <label htmlFor="initial_severity">Initial Severity</label>
@@ -275,7 +295,7 @@ export const ComplaintForm: React.FC = () => {
               value={formData.initial_severity}
               onChange={(e) => handleTextChange("initial_severity", e.target.value)}
             >
-              <option value="">-- Select Severity --</option>
+              <option value="">Awaiting AI extraction...</option>
               <option value="Low">Low</option>
               <option value="Medium">Medium</option>
               <option value="High">High</option>
@@ -284,14 +304,14 @@ export const ComplaintForm: React.FC = () => {
           </div>
 
           <div className="form-group">
-            <label htmlFor="priority">QA Priority</label>
+            <label htmlFor="priority">Priority</label>
             <select
               id="priority"
               name="priority"
               value={formData.priority}
               onChange={(e) => handleTextChange("priority", e.target.value)}
             >
-              <option value="">-- Select Priority --</option>
+              <option value="">Awaiting AI extraction...</option>
               <option value="Low">Low</option>
               <option value="Medium">Medium</option>
               <option value="High">High</option>
@@ -309,6 +329,7 @@ export const ComplaintForm: React.FC = () => {
           onClick={handleReset}
           disabled={isSaving}
         >
+          <span className="btn-icon">↺</span>
           Reset Form
         </button>
         <button
@@ -320,10 +341,13 @@ export const ComplaintForm: React.FC = () => {
           {isSaving ? (
             <>
               <span className="spinner" aria-hidden="true"></span>
-              Saving Complaint...
+              {savedComplaintId ? "Updating Complaint..." : "Saving Complaint..."}
             </>
           ) : (
-            "Save Complaint"
+            <>
+              <span className="btn-icon">💾</span>
+              {savedComplaintId ? "Update Complaint (PATCH)" : "Save Complaint"}
+            </>
           )}
         </button>
       </div>

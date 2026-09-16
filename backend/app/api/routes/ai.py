@@ -13,8 +13,9 @@ Security & Governance Invariants:
 """
 
 import logging
+import os
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 
 from ...db.database import get_db
@@ -24,9 +25,16 @@ from ...schemas.ai import (
     AIComplaintIntakeResponse,
     AIComplaintEditRequest,
     AIComplaintEditProposal,
+    DocumentMetadata,
+    AIDocumentExtractionResponse,
 )
 from ...ai.groq_client import GroqConfigurationError, is_groq_configured
-from ...ai.complaint_graph import complaint_intake_graph, complaint_edit_graph
+from ...ai.complaint_graph import (
+    complaint_intake_graph,
+    complaint_edit_graph,
+    document_extraction_graph,
+)
+from ...ai.document_extractor import SUPPORTED_EXTENSIONS, MAX_FILE_SIZE_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +59,7 @@ async def process_complaint_intake(request: AIComplaintIntakeRequest):
     clean_text = request.text.strip()
     if not clean_text:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Complaint text cannot be empty or only whitespace.",
         )
 
@@ -85,7 +93,7 @@ async def process_complaint_intake(request: AIComplaintIntakeRequest):
     # 3. Check for workflow error
     if result.get("error"):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=result["error"],
         )
 
@@ -127,7 +135,7 @@ async def process_complaint_edit(
     clean_instruction = request.edit_instruction.strip()
     if not clean_instruction:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Edit instruction cannot be empty or only whitespace.",
         )
 
@@ -138,7 +146,7 @@ async def process_complaint_edit(
             complaint_uuid = UUID(request.complaint_id)
         except ValueError:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Invalid UUID format: '{request.complaint_id}'",
             )
 
@@ -169,7 +177,7 @@ async def process_complaint_edit(
         current_data = request.current_complaint
     else:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Either 'complaint_id' (for persisted complaints) or 'current_complaint' (for unsaved complaints) must be provided.",
         )
 
@@ -204,7 +212,7 @@ async def process_complaint_edit(
     # 4. Check for unrecoverable workflow error
     if result.get("error") and not result.get("needs_clarification"):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=result["error"],
         )
 
@@ -218,5 +226,93 @@ async def process_complaint_edit(
         requested_changes=result.get("requested_changes", {}),
         updated_complaint=result.get("updated_complaint", current_data),
         risk_assessment=result.get("risk_assessment"),
+    )
+
+
+@router.post(
+    "/document-extraction",
+    response_model=AIDocumentExtractionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Extract structured complaint data from uploaded document",
+    description=(
+        "Uploads a pharmaceutical complaint document (.pdf, .docx, .txt, .eml up to 10 MB), "
+        "extracts readable text streams, and executes LangGraph + Groq extraction & preliminary risk triage. "
+        "Advisory intake only — NEVER writes directly to PostgreSQL."
+    ),
+)
+async def process_document_extraction(file: UploadFile = File(...)):
+    """
+    Ingests document upload, performs deterministic file validation and extraction,
+    and runs LangGraph complaint extraction and risk assessment.
+    Zero database writes.
+    """
+    filename = file.filename or ""
+    _, ext = os.path.splitext(filename)
+    ext_clean = ext.lower().strip()
+
+    # 1. Deterministic file extension validation (Independent of Groq - User Adjustment 1)
+    if ext_clean not in SUPPORTED_EXTENSIONS:
+        supported_str = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file type '{ext_clean or 'unknown'}'. Supported formats: {supported_str}.",
+        )
+
+    # 2. Read file bytes with 10 MB size limit check (Independent of Groq - User Adjustment 1)
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"File size ({len(file_bytes) / (1024 * 1024):.1f} MB) exceeds the maximum 10 MB limit.",
+        )
+
+    if len(file_bytes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="The uploaded document is empty (0 bytes).",
+        )
+
+    # 3. Invoke LangGraph document extraction graph
+    # Note: Groq configuration is checked only when text is ready for LLM (User Adjustment 1)
+    try:
+        result = await document_extraction_graph.ainvoke({
+            "filename": filename,
+            "file_bytes": file_bytes,
+        })
+    except GroqConfigurationError as e:
+        logger.error(f"Groq configuration error during document extraction: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error executing document extraction workflow: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Document extraction workflow failed during execution ({type(e).__name__}).",
+        )
+
+    # 4. Check for extraction or parsing error in graph state
+    if result.get("error"):
+        error_msg = result["error"]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=error_msg,
+        )
+
+    complaint = result.get("complaint")
+    risk = result.get("risk_assessment")
+    metadata = result.get("document_metadata")
+
+    if not complaint or not risk or not metadata:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document extraction failed to produce complete extraction, risk assessment, or metadata.",
+        )
+
+    return AIDocumentExtractionResponse(
+        complaint=complaint,
+        risk_assessment=risk,
+        document_metadata=metadata,
     )
 

@@ -22,8 +22,10 @@ from ..schemas.ai import (
     AIComplaintEditExtraction,
     ComplaintChanges,
     EDITABLE_COMPLAINT_FIELDS,
+    DocumentMetadata,
 )
-from .groq_client import get_chat_groq
+from .groq_client import get_chat_groq, is_groq_configured, GroqConfigurationError
+from .document_extractor import extract_text_from_document, DocumentExtractionError
 from .prompts import (
     EXTRACTION_SYSTEM_PROMPT,
     RISK_ASSESSMENT_SYSTEM_PROMPT,
@@ -423,4 +425,177 @@ def create_complaint_edit_graph():
 
 
 complaint_edit_graph = create_complaint_edit_graph()
+
+
+# =====================================================================
+# UNIT 7: DOCUMENT EXTRACTION WORKFLOW
+# =====================================================================
+
+class DocumentExtractionGraphState(TypedDict, total=False):
+    """Explicit state container passed between LangGraph document extraction nodes."""
+    filename: str
+    file_bytes: bytes
+    file_extension: Optional[str]
+    extracted_text: Optional[str]
+    complaint: Optional[AIComplaintExtraction]
+    risk_assessment: Optional[AIRiskAssessment]
+    document_metadata: Optional[DocumentMetadata]
+    error: Optional[str]
+
+
+def extract_document_text_node(state: DocumentExtractionGraphState) -> DocumentExtractionGraphState:
+    """
+    Node 1: Deterministic file text extraction.
+    Parses PDF, DOCX, TXT, or EML in memory.
+    Gracefully catches empty text or unreadable/scanned PDFs into state['error'].
+    """
+    filename = state.get("filename", "")
+    file_bytes = state.get("file_bytes", b"")
+
+    try:
+        extracted_text, ext = extract_text_from_document(filename, file_bytes)
+        metadata = DocumentMetadata(
+            filename=filename,
+            file_type=ext,
+            file_size_bytes=len(file_bytes),
+            char_count=len(extracted_text),
+        )
+        return {
+            "file_extension": ext,
+            "extracted_text": extracted_text,
+            "document_metadata": metadata,
+            "error": None,
+        }
+    except DocumentExtractionError as e:
+        return {
+            "error": str(e),
+            "extracted_text": None,
+        }
+    except Exception as e:
+        return {
+            "error": f"Failed to extract text from document: {str(e)}",
+            "extracted_text": None,
+        }
+
+
+def extract_complaint_fields_doc_node(state: DocumentExtractionGraphState) -> DocumentExtractionGraphState:
+    """
+    Node 2: Structured complaint extraction from document text via Groq.
+    Enforces check of Groq configuration before invoking LLM (User Adjustment 1).
+    """
+    if state.get("error"):
+        return {}
+
+    extracted_text = state.get("extracted_text", "").strip()
+    if not extracted_text:
+        return {"error": "Document contains no extractable text."}
+
+    if not is_groq_configured():
+        raise GroqConfigurationError(
+            "Groq AI service is not configured. Please specify GROQ_API_KEY and GROQ_MODEL in backend/.env."
+        )
+
+    llm = get_chat_groq(temperature=0.0)
+    structured_extractor = llm.with_structured_output(AIComplaintExtraction)
+
+    messages = [
+        SystemMessage(content=EXTRACTION_SYSTEM_PROMPT),
+        HumanMessage(
+            content=(
+                f"Please extract all factual pharmaceutical complaint details from this document text:\n\n"
+                f'"""\n{extracted_text}\n"""'
+            )
+        ),
+    ]
+
+    raw_result = structured_extractor.invoke(messages)
+    extraction = (
+        AIComplaintExtraction.model_validate(raw_result)
+        if isinstance(raw_result, dict)
+        else raw_result
+    )
+
+    return {"complaint": extraction}
+
+
+def validate_normalize_doc_node(state: DocumentExtractionGraphState) -> DocumentExtractionGraphState:
+    """
+    Node 3: Normalizes extracted complaint fields.
+    Trims strings, converts empty strings to None, validates quantity integer.
+    """
+    if state.get("error"):
+        return {}
+
+    complaint = state.get("complaint")
+    if not complaint:
+        return {"error": "Failed to extract complaint fields from document"}
+
+    data = complaint.model_dump()
+
+    # Normalize empty strings to None and trim whitespace
+    for key, val in data.items():
+        if isinstance(val, str):
+            clean_str = val.strip()
+            data[key] = clean_str if clean_str else None
+
+    # Quantity validation
+    qty = data.get("quantity_affected")
+    if qty is not None:
+        try:
+            qty_int = int(qty)
+            data["quantity_affected"] = qty_int if qty_int >= 0 else None
+        except (ValueError, TypeError):
+            data["quantity_affected"] = None
+
+    normalized_complaint = AIComplaintExtraction.model_validate(data)
+    return {"complaint": normalized_complaint}
+
+
+def risk_assessment_doc_node(state: DocumentExtractionGraphState) -> DocumentExtractionGraphState:
+    """
+    Node 4: Preliminary risk triage on extracted document facts.
+    """
+    if state.get("error"):
+        return {}
+
+    complaint = state.get("complaint")
+    if not complaint:
+        return {"error": "Cannot assess risk without extracted complaint data"}
+
+    fallback = state.get("extracted_text", "")
+    risk = assess_complaint_risk(complaint.model_dump(), fallback_narrative=fallback)
+    return {"risk_assessment": risk}
+
+
+def build_document_result_node(state: DocumentExtractionGraphState) -> DocumentExtractionGraphState:
+    """
+    Node 5: Compiles final result.
+    """
+    return {}
+
+
+def create_document_extraction_graph():
+    """
+    Builds and compiles the LangGraph workflow for document extraction:
+    START -> extract_document_text -> extract_complaint_fields -> validate_normalize -> risk_assessment -> build_result -> END
+    """
+    workflow = StateGraph(DocumentExtractionGraphState)
+
+    workflow.add_node("extract_document_text", extract_document_text_node)
+    workflow.add_node("extract_complaint_fields", extract_complaint_fields_doc_node)
+    workflow.add_node("validate_normalize", validate_normalize_doc_node)
+    workflow.add_node("risk_assessment", risk_assessment_doc_node)
+    workflow.add_node("build_result", build_document_result_node)
+
+    workflow.add_edge(START, "extract_document_text")
+    workflow.add_edge("extract_document_text", "extract_complaint_fields")
+    workflow.add_edge("extract_complaint_fields", "validate_normalize")
+    workflow.add_edge("validate_normalize", "risk_assessment")
+    workflow.add_edge("risk_assessment", "build_result")
+    workflow.add_edge("build_result", END)
+
+    return workflow.compile()
+
+
+document_extraction_graph = create_document_extraction_graph()
 

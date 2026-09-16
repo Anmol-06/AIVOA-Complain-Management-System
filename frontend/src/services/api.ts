@@ -85,6 +85,52 @@ export async function createComplaint(
 }
 
 /**
+ * Updates an existing customer complaint via PATCH /api/complaints/{id}.
+ * The database record is authoritative. Unspecified fields retain their existing values.
+ */
+export async function updateComplaint(
+  id: string,
+  data: Partial<ComplaintFormData>
+): Promise<ComplaintResponse> {
+  const sanitizedPayload = Object.fromEntries(
+    Object.entries(data).map(([key, value]) => [
+      key,
+      value === "" ? null : value,
+    ])
+  );
+
+  const response = await fetch(`${API_BASE_URL}/api/complaints/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(sanitizedPayload),
+  });
+
+  if (!response.ok) {
+    let errorMessage = `Failed to update complaint (HTTP ${response.status})`;
+    try {
+      const errorJson = await response.json();
+      if (errorJson?.detail) {
+        if (typeof errorJson.detail === "string") {
+          errorMessage = errorJson.detail;
+        } else if (Array.isArray(errorJson.detail)) {
+          errorMessage = errorJson.detail
+            .map((err: any) => `${err.loc?.join(".") || "Field"}: ${err.msg}`)
+            .join(" | ");
+        }
+      }
+    } catch {
+      // Fallback
+    }
+    throw new Error(errorMessage);
+  }
+
+  return (await response.json()) as ComplaintResponse;
+}
+
+/**
  * Submits natural language complaint text to the AI intake pipeline.
  * Executes LangGraph workflow on the server and returns structured suggestions.
  * Note: Never saves to PostgreSQL automatically.
@@ -177,6 +223,56 @@ export async function runComplaintEdit(
   }
 
   return (await response.json()) as AIComplaintEditProposal;
+}
+
+export interface DocumentMetadata {
+  filename: string;
+  file_type: string;
+  file_size_bytes: number;
+  char_count: number;
+}
+
+export interface AIDocumentExtractionResponse {
+  complaint: AIComplaintExtraction;
+  risk_assessment: AIRiskAssessment;
+  document_metadata: DocumentMetadata;
+}
+
+/**
+ * Uploads a document (.pdf, .docx, .txt, .eml <= 10MB) for AI text extraction & preliminary risk triage.
+ * Zero database writes.
+ */
+export async function runDocumentExtraction(
+  file: File
+): Promise<AIDocumentExtractionResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch(`${API_BASE_URL}/api/ai/document-extraction`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let errorMessage = `Document extraction failed (HTTP ${response.status})`;
+    try {
+      const errorJson = await response.json();
+      if (errorJson?.detail) {
+        if (typeof errorJson.detail === "string") {
+          errorMessage = errorJson.detail;
+        } else if (Array.isArray(errorJson.detail)) {
+          errorMessage = errorJson.detail
+            .map((err: any) => `${err.loc?.join(".") || "Field"}: ${err.msg}`)
+            .join(" | ");
+        }
+      }
+    } catch {
+      // Fallback
+    }
+    throw new Error(errorMessage);
+  }
+
+  return (await response.json()) as AIDocumentExtractionResponse;
 }
 
 
