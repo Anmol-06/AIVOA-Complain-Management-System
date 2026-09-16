@@ -47,3 +47,13 @@ dist-ssr/
 *.swp
 *.swo
 .playwright-mcp/
+
+# Local Project Documentation & Interview Notes (Preserved locally, omitted from git repository)
+docs/
+
+# Root screenshot artifacts & media
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+
