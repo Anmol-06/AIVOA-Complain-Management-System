@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 
 from .db.database import init_db, check_db_connection
 from .api.routes.complaints import router as complaints_router
+from .api.routes.ai import router as ai_router
+from .ai.groq_client import is_groq_configured
 
 # Load environment variables from .env file if it exists locally
 load_dotenv()
@@ -24,7 +26,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AIVOA Complaint Management System API",
     description="Backend API for AI-powered Pharmaceutical Complaint Management",
-    version="0.3.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -43,6 +45,7 @@ app.add_middleware(
 
 # Mount API Routers
 app.include_router(complaints_router)
+app.include_router(ai_router)
 
 
 @app.get("/")
@@ -51,7 +54,7 @@ def read_root():
     return {
         "service": "AIVOA Complaint Management System API",
         "status": "online",
-        "unit": "Unit 2: Database Foundation & Schema",
+        "unit": "Unit 5: Groq + LangGraph AI Complaint Intake",
         "docs_url": "/docs",
     }
 
@@ -59,13 +62,20 @@ def read_root():
 @app.get("/api/health")
 def health_check():
     """
-    Health check endpoint verifying API service and database connectivity.
-    Security rule: never exposes database URLs, passwords, or connection credentials.
+    Health check endpoint verifying API service, database connectivity, and AI configuration.
+    Security rule: never exposes database URLs, passwords, Groq API keys, or credentials.
     """
     db_status = check_db_connection()
+    ai_status = "configured" if is_groq_configured() else "not_configured"
     return {
         "status": "ok",
         "service": "AIVOA Complaint Management System API",
-        "unit": "Unit 2: Database Foundation",
+        "unit": "Unit 5: Groq + LangGraph AI Complaint Intake",
         "database": db_status,
+        "ai_service": {
+            "status": ai_status,
+            "provider": "Groq",
+            "orchestrator": "LangGraph",
+        },
     }
+

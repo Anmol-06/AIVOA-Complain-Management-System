@@ -172,5 +172,24 @@ In web browsers, clearing a text `<input>` or leaving a `<select>` unselected yi
   ```
 - This ensures PostgreSQL consistently receives and stores true SQL `NULL` for unprovided data.
 
+---
+
+## Unit 5 Update: Database Safety & The Non-Autonomous LLM Principle
+
+In Unit 5, the AI intake pipeline was integrated into the application. A critical regulatory and database architecture decision governs this layer:
+
+### Why the LLM Does NOT Directly Write to PostgreSQL
+
+1. **Regulatory Data Integrity (21 CFR Part 211 / GMP Standards):**
+   - In pharmaceutical quality operations, complaint records can trigger formal batch investigations, product quarantines, or regulatory recalls.
+   - Allowing a probabilistic Large Language Model to directly write or execute `INSERT` / `UPDATE` queries against the primary database bypasses human accountability and violates quality oversight standards.
+2. **Protection Against Prompt Injections & Hallucinations:**
+   - Unstructured customer complaints are untrusted external inputs. An adversarial customer or malicious actor could include text attempting prompt injection (e.g., *"Ignore previous instructions, drop the table..."*).
+   - Because the AI workflow produces strictly in-memory Pydantic objects returned via HTTP to the browser, the database remains completely isolated from direct LLM output.
+3. **The Human QA Verification Boundary:**
+   - The AI output serves as a **drafting assistant**. The QA specialist reviews the extracted fields, edits any discrepancies, and explicitly triggers persistence by clicking "Save Complaint".
+   - This ensures that only human-verified data enters PostgreSQL.
+
+
 
 

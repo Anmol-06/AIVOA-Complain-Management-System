@@ -300,6 +300,97 @@ Provide a clean two-column QMS layout featuring a placeholder for the future AI 
 ### 5. Next Steps (Pending User Approval)
 - Unit 5: AI Document Extraction & Natural Language Complaint Intake (LangGraph + Groq LLM workflow).
 
+---
+
+## [2026-09-16] - Unit 5: Groq + LangGraph AI Complaint Intake
+
+### 1. Objective
+Implement the first AI vertical slice for the AIVOA Customer Complaint Management System:
+Natural-language complaint text → FastAPI → LangGraph → Groq → structured extraction → normalization → initial risk triage → FastAPI response → React/Redux.
+Ensure strict anti-hallucination, null safety, human-in-the-loop review, and complete server-side secret isolation.
+
+### 2. What Was Implemented
+- **Dependencies (`backend/requirements.txt`):**
+  - Added `groq>=0.37.0`, `langgraph>=1.2.0`, `langchain-groq>=1.1.0`.
+  - Verified installation in Python 3.14 virtual environment without dependency conflicts.
+- **Server-Side Environment & Groq Client (`backend/app/ai/`):**
+  - Updated `backend/.env.example` with `GROQ_API_KEY=your_groq_api_key_here` and `GROQ_MODEL=your_supported_model_here`.
+  - Created `backend/app/ai/groq_client.py`:
+    - Loads `GROQ_API_KEY` and `GROQ_MODEL` from `backend/.env`.
+    - Avoids hardcoding any default model; raises `GroqConfigurationError` with a clear message if unconfigured.
+    - Provides `get_chat_groq()` with temperature `0.0` for deterministic extraction.
+    - Provides `is_groq_configured()` check.
+- **AI Pydantic Schemas (`backend/app/schemas/ai.py`):**
+  - `AIComplaintExtraction`: All 11 domain fields typed with optional/null fallback.
+  - `AIRiskAssessment`: `initial_severity`, `priority`, `risk_reasoning`, `recommended_next_actions`.
+  - `AIComplaintIntakeRequest`: Validates narrative input (rejects empty/whitespace).
+  - `AIComplaintIntakeResponse`: Structured container for extraction and risk assessment.
+- **Prompts (`backend/app/ai/prompts.py`):**
+  - `EXTRACTION_SYSTEM_PROMPT`: Strict anti-hallucination instructions. Sets unstated fields to `null`. Never fabricates lot numbers, dates, or quantities.
+  - `RISK_ASSESSMENT_SYSTEM_PROMPT`: Preliminary triage instructions. Acknowledges uncertainty if data is missing. Proposes actionable QA next steps.
+- **LangGraph StateGraph Workflow (`backend/app/ai/complaint_graph.py`):**
+  - Directed workflow: `START -> extract_fields -> validate_normalize -> risk_assessment -> build_result -> END`.
+  - Compiles into deterministic, auditable `CompiledStateGraph`.
+  - Does NOT persist or commit to PostgreSQL.
+- **FastAPI AI Route (`backend/app/api/routes/ai.py` & `backend/app/main.py`):**
+  - `POST /api/ai/complaint-intake`: Validates input, checks AI configuration (returns HTTP 503 if unconfigured), executes graph, and returns structured response.
+  - Enhanced `GET /api/health` to report safe AI service status (`configured` vs `not_configured`) without exposing keys.
+- **Frontend API Service & Redux Slices:**
+  - `frontend/src/services/api.ts`: Added `runComplaintIntake(text: string)`.
+  - `frontend/src/store/slices/aiSlice.ts`: Created `aiSlice` managing `inputText`, `isAnalyzing`, `error`, `analysisResult`.
+  - `frontend/src/store/slices/complaintSlice.ts`: Added `populateComplaintFields` reducer to copy AI suggestions into manual form inputs without losing existing user inputs.
+  - `frontend/src/store/index.ts`: Registered `aiReducer` under `state.ai`.
+- **Frontend AI Assistant Component (`frontend/src/components/ai/AIAssistant.tsx`):**
+  - Mounted active assistant in `App.tsx` replacing the placeholder card.
+  - Features quick-test sample chips, natural language textarea, analyze button with loading spinner, extracted entity chips, risk assessment card (severity, priority, reasoning, next steps), and "Apply to Complaint Form" button.
+  - Enhanced `frontend/src/index.css` with responsive styling and color-coded risk badges.
+
+### 3. What Was Intentionally NOT Implemented
+- **No Document / Image OCR / PDF / DOCX parsing:** Deferred to Unit 6.
+- **No Direct Database Writes by AI:** Human QA must review and click "Save Complaint".
+- **No Autonomous Agent Loops / ReAct Tools:** Deterministic LangGraph StateGraph only.
+- **No Edit Complaint Feature:** Fact intake only.
+- **No Authentication / RBAC:** Deferred to security phase.
+- **No RAG or Vector Databases:** Deferred to knowledge base phase.
+
+### 4. Verification & Testing Performed
+- **Backend Test Suite (`backend/test_ai_verification.py`):**
+  - Ran 7 comprehensive tests:
+    - Test 1 (Valid extraction): Verified structured extraction and risk triage.
+    - Test 2 (Null safety): Verified unstated fields remain `None` without hallucinations.
+    - Test 3 (Validation): Verified empty/whitespace input rejected with HTTP 422.
+    - Test 4 (Missing API key): Verified clean HTTP 503 returned without crash.
+    - Test 5 (LangGraph pipeline): Verified 4 sequential nodes execute properly.
+    - Test 6 (Health endpoint): Verified AI service status reported safely.
+    - Test 7 (Database Safety): Confirmed row count in PostgreSQL remained exactly unchanged (delta = 0).
+- **CRUD Regression Test Suite (`backend/test_crud_verification.py`):**
+  - All 9 CRUD steps passed (POST, GET list, GET by ID, PATCH partial update, 404, 422, direct SQL query, and cleanup).
+- **Frontend Build & Linter:**
+  - `npm run build`: Passed cleanly in 158ms.
+  - `npm run lint`: Passed with 0 errors and 0 warnings.
+- **Playwright MCP Browser Automation:**
+  - Loaded `http://localhost:5173`.
+  - Verified two-column desktop layout with active AI Assistant on the right.
+  - Tested unconfigured API key error state: verified clean red alert `⚠️ Analysis Error: Groq AI service is not configured...`.
+  - Tested sample prompt fill: populated Paracetamol 500mg narrative.
+  - Tested AI extraction result display: verified entities grid, risk triage badges, risk reasoning, and recommended QA actions.
+  - Tested "Apply to Complaint Form": verified left form was populated with extracted data and risk values while remaining fully editable.
+  - Verified no automated database write occurred.
+- **Security Check:**
+  - Ran ripgrep search across `frontend/`: Confirmed 0 Groq API keys, 0 Authorization headers, and 0 secret tokens in client code.
+- **Live Groq Inference & Factual Accuracy Verification:**
+  - Executed live API requests against the configured model (`openai/gpt-oss-120b` via `backend/.env`).
+  - Confirmed 100% extraction accuracy on valid complaints (customer, product, strength, batch, quantity).
+  - Confirmed strict null-safety (unstated manufacturing/expiry/complaint dates remain `null`).
+  - Confirmed source inference accuracy (only marks `complaint_source: Email` if explicitly stated in text; does not infer email from general reports).
+  - Confirmed preliminary risk triage (preliminary severity/priority, fact-based reasoning acknowledging missing facts, and actionable QA next steps).
+  - Confirmed in-browser human-in-the-loop workflow: "Apply to Complaint Form" populated the left form while keeping it fully editable, with zero automated database mutations.
+
+### 5. Next Steps (Pending User Approval)
+- Unit 6: Document & Multimodal Complaint Intake (PDF / photo upload, OCR extraction, and document processing).
+
+
+
 
 
 

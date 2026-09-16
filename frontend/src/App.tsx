@@ -1,5 +1,6 @@
 import React from "react";
 import { ComplaintForm } from "./components/complaint/ComplaintForm";
+import { AIAssistant } from "./components/ai/AIAssistant";
 
 export const App: React.FC = () => {
   return (
@@ -21,7 +22,7 @@ export const App: React.FC = () => {
               <span className="pulse-dot"></span>
               FastAPI + Supabase Connected
             </span>
-            <span className="status-pill status-unit">Unit 4 • Intake Form</span>
+            <span className="status-pill status-unit">Unit 5 • Groq + LangGraph AI</span>
           </div>
         </div>
       </header>
@@ -34,56 +35,18 @@ export const App: React.FC = () => {
             <ComplaintForm />
           </section>
 
-          {/* RIGHT COLUMN: AI Intake Assistant Placeholder */}
+          {/* RIGHT COLUMN: AI Complaint Intake Assistant */}
           <aside
             className="column-right"
             aria-label="AI Complaint Intake Assistant"
           >
-            <div className="assistant-placeholder-card">
-              <div className="assistant-header">
-                <div className="ai-icon-bubble">🤖</div>
-                <div>
-                  <h3>AI Intake Assistant</h3>
-                  <span className="badge-coming-soon">Scheduled for Next Unit</span>
-                </div>
-              </div>
-
-              <div className="assistant-body">
-                <p className="assistant-info">
-                  Automated document extraction, voice/audio transcription, and
-                  natural-language intake triage are scheduled for the AI workflow unit.
-                </p>
-
-                <div className="placeholder-feature-box">
-                  <div className="feature-icon">📄</div>
-                  <div className="feature-text">
-                    <strong>Document & Image OCR</strong>
-                    <span>Extract batch numbers and complaint details from attached photos & PDFs</span>
-                  </div>
-                </div>
-
-                <div className="placeholder-feature-box">
-                  <div className="feature-icon">⚡</div>
-                  <div className="feature-text">
-                    <strong>LangGraph + Groq Workflow</strong>
-                    <span>Automated categorization, severity triage & QA review assistance</span>
-                  </div>
-                </div>
-
-                <div className="assistant-notice">
-                  <span className="notice-icon">ℹ️</span>
-                  <span>
-                    Form inputs on the left are fully interactive and persist directly
-                    to PostgreSQL via the FastAPI backend.
-                  </span>
-                </div>
-              </div>
-            </div>
+            <AIAssistant />
           </aside>
         </div>
       </main>
     </div>
   );
 };
+
 
 export default App;

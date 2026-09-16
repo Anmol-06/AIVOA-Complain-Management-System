@@ -247,5 +247,63 @@ Historical entries are preserved permanently.
   - Establishes the final visual layout expected in pharmaceutical Quality Management Systems without introducing premature AI dependencies.
   - Clear UX boundaries between manual complaint intake and future automated AI capabilities.
 
+---
+
+## ADR-017: LangGraph Directed StateGraph for Multi-Node AI Intake Pipeline
+- **Date:** 2026-09-16
+- **Status:** Accepted
+- **Context:**
+  Unstructured pharmaceutical complaints require multiple processing steps: extracting structured domain fields, validating and normalizing formats, performing preliminary risk triage, and building a structured response. We evaluated using a single monolithic prompt vs an autonomous ReAct agent vs a deterministic LangGraph StateGraph.
+- **Decision:**
+  Use LangGraph's `StateGraph` with explicit sequential nodes:
+  `START -> extract_fields -> validate_normalize -> risk_assessment -> build_result -> END`.
+- **Consequences:**
+  - Decouples extraction from risk triage, improving model accuracy on both tasks.
+  - Intermediate state is typed (`ComplaintGraphState`) and easily inspectable/testable.
+  - Avoids unpredictable loops and tool-calling drift inherent in autonomous ReAct agents.
+
+---
+
+## ADR-018: Strict Anti-Hallucination and Null-Safety Policy
+- **Date:** 2026-09-16
+- **Status:** Accepted
+- **Context:**
+  In pharmaceutical manufacturing, fabricating batch numbers, dates, customer names, or quantities can mislead quality investigations and violate regulatory audit standards.
+- **Decision:**
+  Enforce a strict anti-hallucination policy via system prompts and normalization:
+  - The model is explicitly instructed to extract only facts directly stated in the text.
+  - Unmentioned fields MUST be returned as `null` (None).
+  - Normalization verifies string cleanliness, enforces integer typing for quantities, and prevents negative values.
+- **Consequences:**
+  - Incomplete complaints remain accurately incomplete without artificial placeholders.
+  - Protects pharmaceutical data integrity.
+
+---
+
+## ADR-019: Human-in-the-Loop Review Boundary (No Direct Database Writes by AI)
+- **Date:** 2026-09-16
+- **Status:** Accepted
+- **Context:**
+  We must decide whether the AI workflow should automatically save extracted complaints directly to PostgreSQL.
+- **Decision:**
+  The AI intake pipeline NEVER writes directly to PostgreSQL. It returns structured suggestions to the React frontend. The QA operator reviews the data, clicks "Apply to Complaint Form", edits any fields if needed, and explicitly submits the form to persist the record.
+- **Consequences:**
+  - Ensures compliance with pharmaceutical QMS standards (human accountability).
+  - Eliminates the risk of prompt injections or hallucinations corrupting the database.
+
+---
+
+## ADR-020: Environment-Configured Groq Model Selection (Model Agnosticism)
+- **Date:** 2026-09-16
+- **Status:** Accepted
+- **Context:**
+  AI model availability, versions, and performance evolve rapidly. Hard-coding a model name in Python files causes deprecation breakage.
+- **Decision:**
+  Configure the Groq model name exclusively through the server-side environment variable `GROQ_MODEL` in `backend/.env`. Do not hardcode defaults to any single model.
+- **Consequences:**
+  - Operations team can switch or upgrade models instantaneously without code redeployment.
+  - Prevents breaking changes when providers retire model checkpoints.
+
+
 
 

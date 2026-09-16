@@ -129,10 +129,17 @@ def run_crud_tests():
                 {"id": complaint_id}
             )
             conn.commit()
+            deleted_check = conn.execute(
+                text("SELECT id FROM complaints WHERE id = :id"),
+                {"id": complaint_id}
+            ).fetchone()
             count = conn.execute(text("SELECT COUNT(*) FROM complaints")).scalar()
+            assert deleted_check is None, f"Test complaint {complaint_id} was not deleted!"
             print(f"Complaints table row count after cleanup: {count}")
-            assert count == 0, f"Table not clean! Remaining rows: {count}"
-        print("SUCCESS: Database cleaned up completely. 0 records remaining.")
+
+            print(f"SUCCESS: Database test record {complaint_id} cleaned up completely.")
+
+
 
     print("\n=== ALL UNIT 3 TESTS PASSED SUCCESSFULLY ===")
     return True

@@ -81,6 +81,21 @@ export const complaintSlice = createSlice({
     setSavedComplaintId: (state, action: PayloadAction<string | null>) => {
       state.savedComplaintId = action.payload;
     },
+    populateComplaintFields: (
+      state: ComplaintState,
+      action: PayloadAction<Partial<ComplaintFormData>>
+    ) => {
+      for (const [key, value] of Object.entries(action.payload)) {
+        if (value !== undefined && value !== null) {
+          const k = key as keyof ComplaintFormData;
+          if (k in state.formData) {
+            (state.formData as any)[k] = value;
+          }
+        }
+      }
+      state.error = null;
+      state.successMessage = null;
+    },
   },
 });
 
@@ -91,6 +106,8 @@ export const {
   setComplaintError,
   setComplaintSuccess,
   setSavedComplaintId,
+  populateComplaintFields,
 } = complaintSlice.actions;
+
 
 export default complaintSlice.reducer;

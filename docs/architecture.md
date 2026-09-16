@@ -282,5 +282,74 @@ In Unit 4, the pharmaceutical complaint intake form was implemented on the React
    - Any end-user can view these strings by opening browser DevTools or reading network bundles.
    - Sensitive credentials—such as `DATABASE_URL`, database passwords, or `GROQ_API_KEY`—must **never** be placed in frontend code or frontend environment variables. They reside exclusively in server-side configuration (`backend/.env`).
 
+---
+
+## Unit 5 Update: Groq + LangGraph AI Complaint Intake Architecture
+
+In Unit 5, the first AI vertical slice was added: an AI-assisted intake pipeline using **LangGraph** as the workflow orchestrator and **Groq** as the high-throughput inference engine.
+
+```
+[User enters unstructured narrative in React AIAssistant]
+                             │
+                             ▼
+[POST /api/ai/complaint-intake (JSON: {"text": "..."})]
+                             │
+                             ▼
+[FastAPI AI Route (backend/app/api/routes/ai.py)]
+  - Validates request using AIComplaintIntakeRequest
+  - Checks if Groq is configured (returns 503 if missing)
+                             │
+                             ▼
+[LangGraph StateGraph Workflow (backend/app/ai/complaint_graph.py)]
+  │
+  ├─► Node 1: extract_fields
+  │     - Uses ChatGroq with structured output schema (AIComplaintExtraction)
+  │     - Anti-hallucination prompt: unmentioned fields MUST be null
+  │
+  ├─► Node 2: validate_normalize
+  │     - Normalizes strings (trims whitespace, converts empty strings to None)
+  │     - Enforces non-negative integer for quantity_affected
+  │     - Re-validates with Pydantic
+  │
+  ├─► Node 3: risk_assessment
+  │     - Passes extracted facts to ChatGroq (AIRiskAssessment schema)
+  │     - Produces preliminary initial_severity, priority, reasoning, and next actions
+  │     - Enforces canonical casing and valid categories
+  │
+  └─► Node 4: build_result
+        - Compiles final payload: {"complaint": {...}, "risk_assessment": {...}}
+        - Does NOT persist to PostgreSQL
+                             │
+                             ▼
+[HTTP 200 Response: AIComplaintIntakeResponse]
+                             │
+                             ▼
+[React Frontend: Redux aiSlice receives analysisResult]
+  - Renders extracted entities summary & risk triage card
+  - User inspects AI recommendations
+                             │
+                             ▼ (User clicks "Apply to Complaint Form")
+[Redux complaintSlice updated via populateComplaintFields action]
+  - Populates editable form on the left
+  - Form remains fully editable for human QA review
+                             │
+                             ▼ (User explicitly clicks "Save Complaint")
+[POST /api/complaints -> PostgreSQL Persistence]
+```
+
+### Key Architectural Invariants for AI in Pharmaceutical QMS
+
+1. **Human-in-the-Loop (Non-Autonomous Database Write):**
+   - Under pharmaceutical Good Manufacturing Practice (GMP), an AI model must never be the final decision-maker or autonomously commit records to official systems of record.
+   - The LangGraph workflow produces *advisory proposals* for human QA review. The user reviews and verifies the fields before explicitly clicking "Save Complaint".
+2. **Deterministic Workflow via LangGraph vs. Autonomous Agents:**
+   - Rather than an unpredictable autonomous agent loop, LangGraph coordinates a fixed, directed acyclic workflow:
+     $$\text{START} \longrightarrow \text{extract\_fields} \longrightarrow \text{validate\_normalize} \longrightarrow \text{risk\_assessment} \longrightarrow \text{build\_result} \longrightarrow \text{END}$$
+   - This ensures strict auditability, deterministic state transitions, and verifiable intermediate steps.
+3. **Server-Side Groq Isolation & Model Agnosticism:**
+   - `GROQ_API_KEY` exists strictly on the server (`backend/.env`).
+   - `GROQ_MODEL` is configurable via environment variables, avoiding hard-coded deprecated models.
+
+
 
 
